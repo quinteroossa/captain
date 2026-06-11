@@ -1,10 +1,14 @@
+import logging
 import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 import torch
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 def plot_grid(
@@ -119,7 +123,12 @@ def create_gif(png_files, duration_ms=100, rm_png=False):
 
 
 def plot_extinction_risk(
-        data, labels, title="Conservation Status Distribution", outfile=None, dpi=100
+        data,
+        labels,
+        title="Conservation Status Distribution",
+        outfile=None,
+        dpi=100,
+        ymax=None,
 ):
     """
     Plots a bar chart of conservation status counts.
@@ -130,39 +139,39 @@ def plot_extinction_risk(
         title: Title of the plot.
         outfile: Path to save the PNG. If None, it calls plt.show().
     """
+
     if torch.is_tensor(data):
-        # .detach() removes it from the computational graph
-        # .cpu() ensures it is on system memory, not GPU
-        # .numpy() converts it
         data = data.detach().cpu().numpy()
 
-    # 1. Calculate counts for exactly 5 categories (0 through 4)
-    # minlength ensures that if a category has 0 counts, it still appears in the array
     counts = np.bincount(data.astype(int), minlength=len(labels))
 
-    # 2. Create the figure
     plt.figure(figsize=(8, 5), dpi=dpi)
 
-    # 3. Define the Green-to-Red Colormap
-    # 'RdYlGn' goes from Red (0.0) to Green (1.0).
-    # Since we want Status 0 (Safe) to be Green, we sample from 1.0 down to 0.0.
     cmap = plt.get_cmap("RdYlGn")
     colors = cmap(np.linspace(1, 0, len(labels)))
 
-    # 4. Create the Bar Plot
     bars = plt.bar(labels, counts, color=colors, edgecolor="black", linewidth=0.8)
 
-    # 5. Aesthetics
+    # Calculate unified Y-limit with a 15% headroom for the text labels
+    y_limit = (
+        ymax * 1.15
+        if ymax is not None
+        else (max(counts) if len(counts) > 0 else 1) * 1.15
+    )
+
+    plt.ylim(0, y_limit)
+
     plt.title(title, fontsize=14, fontweight="bold", pad=15)
     plt.ylabel("Number of Species", fontsize=12)
     plt.xlabel("Status", fontsize=12)
 
-    # Add count labels on top of each bar
+    # Add count labels on top of each bar using a dynamic vertical offset
+    text_offset = y_limit * 0.02
     for bar in bars:
         height = bar.get_height()
         plt.text(
             bar.get_x() + bar.get_width() / 2.0,
-            height + 0.1,
+            height + text_offset,
             f"{int(height)}",
             ha="center",
             va="bottom",
@@ -170,7 +179,6 @@ def plot_extinction_risk(
             fontweight="bold",
         )
 
-    # Clean up layout
     plt.grid(axis="y", linestyle="--", alpha=0.3)
     plt.gca().spines["top"].set_visible(False)
     plt.gca().spines["right"].set_visible(False)
@@ -179,12 +187,63 @@ def plot_extinction_risk(
 
     if outfile:
         plt.savefig(outfile, bbox_inches="tight", dpi=dpi)
-        print(f"Plot saved to {outfile}")
+        logger.info("Plot saved to %s", outfile)
     else:
         plt.show()
 
     plt.close()
 
+
 # --- Example Usage ---
 # status_labels = ["Least Concern", "Near Threatened", "Vulnerable", "Endangered", "Critically Endangered"]
 # plot_conservation_distribution(conservation_status, status_labels, outfile="status_plot.png")
+
+
+def plot_rl_rewards(
+        file_path,
+        start_span=30,
+        end_span=1000,
+        title="RL training rewards",
+        outfile=None,
+        dpi=300,
+):
+    df = pd.read_csv(file_path, sep="\t")
+    rewards = df["reward"].values
+    epochs = np.arange(len(rewards))
+
+    # 1. Define your span range
+    # Start with a small span (very reactive) and grow to a larger one (very smooth)
+
+    # 2. Create an array of alphas that decrease over time
+    # (Since larger span = smaller alpha = more smoothing)
+    spans = np.exp(np.linspace(np.log(start_span), np.log(end_span), len(rewards)))
+    alphas = 2 / (spans + 1)
+
+    # 3. Compute the Dynamic EMA
+    # We have to do this in a loop because 'span' in .ewm() doesn't accept an array
+    smoothed = np.zeros(len(rewards))
+    smoothed[0] = rewards[0]
+    for t in range(1, len(rewards)):
+        # Formula: y_t = (1 - alpha)*y_{t-1} + alpha*x_t
+        smoothed[t] = (1 - alphas[t]) * smoothed[t - 1] + alphas[t] * rewards[t]
+
+    # 4. Plotting
+    plt.figure(figsize=(8, 4.5))
+    plt.scatter(epochs, rewards, color="tab:blue", alpha=0.15, s=8)
+    plt.plot(
+        epochs, smoothed, color="crimson", linewidth=2.5, label="Dynamic Span Trend"
+    )
+
+    plt.title(title, fontsize=14)
+    plt.xlabel("Epoch")
+    plt.ylabel("Reward")
+    plt.gca().spines[["top", "right"]].set_visible(False)
+    plt.tight_layout()
+
+    if outfile:
+        plt.savefig(outfile, bbox_inches="tight", dpi=dpi)
+        logger.info("Plot saved to %s", outfile)
+    else:
+        plt.show()
+
+    plt.close()

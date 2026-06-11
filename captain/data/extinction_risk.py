@@ -36,17 +36,18 @@ class ExtinctionRisk:
     """
 
     def __init__(
-        self,
-        init_status: np.ndarray | torch.Tensor,
-        n_classes: int = 5,
-        init_range: np.ndarray | torch.Tensor | None = None,
-        init_pop: np.ndarray | torch.Tensor | None = None,
-        init_protected_range: np.ndarray | torch.Tensor | None = None,
-        init_protected_pop: np.ndarray | torch.Tensor | None = None,
-        alpha: float = 1.0,
-        loss_thresholds: np.ndarray | torch.Tensor | None = None,
-        protect_thresholds: np.ndarray | torch.Tensor | None = None,
-        device: torch.device | str = "cpu",
+            self,
+            init_status: np.ndarray | torch.Tensor,
+            n_classes: int = 5,
+            init_range: np.ndarray | torch.Tensor | None = None,
+            init_pop: np.ndarray | torch.Tensor | None = None,
+            init_protected_range: np.ndarray | torch.Tensor | None = None,
+            init_protected_pop: np.ndarray | torch.Tensor | None = None,
+            alpha: float = 1.0,
+            loss_thresholds: np.ndarray | torch.Tensor | None = None,
+            protect_thresholds: np.ndarray | torch.Tensor | None = None,
+            device: torch.device | str = "cpu",
+            class_names: list[str] | None = None,
     ):
         """Initialize extinction risk classifier.
 
@@ -65,6 +66,12 @@ class ExtinctionRisk:
         self.device = torch.device(device)
         self._n_classes = n_classes
         self._alpha = alpha
+        if class_names is not None:
+            self._class_names = class_names
+        else:
+            self._class_names = [f"threat_{i}" for i in range(n_classes)]
+        if len(self._class_names) != n_classes:
+            raise ValueError("Number of class names must equal n_classes.")
 
         # Convert inputs to torch tensors
         if isinstance(init_status, np.ndarray):
@@ -88,20 +95,26 @@ class ExtinctionRisk:
                     f"must be n_classes + 1 ({self._n_classes + 1})"
                 )
         else:
-            beta = torch.arange(self._n_classes + 1, dtype=torch.float32) / self._n_classes
+            beta = (
+                    torch.arange(self._n_classes + 1, dtype=torch.float32) / self._n_classes
+            )
             self._loss_thresholds = (beta ** (1.0 / self._alpha)).to(self.device)
 
         if protect_thresholds is not None:
             if isinstance(protect_thresholds, np.ndarray):
                 protect_thresholds = torch.from_numpy(protect_thresholds)
-            self._protect_thresholds = protect_thresholds.to(self.device, dtype=torch.float32)
+            self._protect_thresholds = protect_thresholds.to(
+                self.device, dtype=torch.float32
+            )
             if len(self._protect_thresholds) - 1 != self._n_classes:
                 raise ValueError(
                     f"Number of protect thresholds ({len(self._protect_thresholds)}) "
                     f"must be n_classes + 1 ({self._n_classes + 1})"
                 )
         else:
-            beta = torch.arange(self._n_classes + 1, dtype=torch.float32) / self._n_classes
+            beta = (
+                    torch.arange(self._n_classes + 1, dtype=torch.float32) / self._n_classes
+            )
             self._protect_thresholds = (beta ** (1.0 / self._alpha)).to(self.device)
 
         self._delta_z = torch.zeros_like(self._init_status)
@@ -116,7 +129,7 @@ class ExtinctionRisk:
         return arr.to(self.device, dtype=torch.float32)
 
     def classify(
-        self, current_pop: torch.Tensor, protected_pop: torch.Tensor
+            self, current_pop: torch.Tensor, protected_pop: torch.Tensor
     ) -> torch.Tensor:
         """Classify species extinction risk.
 
@@ -131,12 +144,20 @@ class ExtinctionRisk:
         current_pop = current_pop.to(self.device, dtype=torch.float32)
         protected_pop = protected_pop.to(self.device, dtype=torch.float32)
 
-        # 1. Standardize Decline: 0 (no loss) to 1 (extinct)
+        # 1. Standardize Decline: from 0 (no loss) to 1 (extinct)
         decline_ratio = torch.clamp(1 - (current_pop / self._init_pop), 0, 1)
 
-        # 2. Protection Ratio: 0 (none) to 1 (full)
+        # 2.1 Protection Ratio: 0 (none) to 1 (full)
         protected_ratio = torch.clamp(
             protected_pop / torch.clamp(current_pop, min=1), 0, 1
+        )
+
+        # 2.2 If species started off with some level of protection
+        # only additional relative protection leads to status improvements
+        protected_ratio = torch.clamp(
+            (protected_ratio - self._init_protected_ratio)
+            / self._init_protected_ratio_denominator,
+            min=0,
         )
 
         # 3. Calculate Base Risk Increase from decline
@@ -153,11 +174,11 @@ class ExtinctionRisk:
         return torch.clamp(new_status, 0, self._n_classes - 1)
 
     def set_init_values(
-        self,
-        init_pop: torch.Tensor | np.ndarray,
-        init_protected_pop: torch.Tensor | np.ndarray,
-        init_protected_range: torch.Tensor | np.ndarray | None = None,
-        init_protected_pop_range: torch.Tensor | np.ndarray | None = None,
+            self,
+            init_pop: torch.Tensor | np.ndarray,
+            init_protected_pop: torch.Tensor | np.ndarray,
+            init_protected_range: torch.Tensor | np.ndarray | None = None,
+            init_protected_pop_range: torch.Tensor | np.ndarray | None = None,
     ) -> None:
         """Set initial population values for classification baseline.
 
@@ -171,9 +192,15 @@ class ExtinctionRisk:
         self._init_protected_pop = self._to_tensor(init_protected_pop)
         self._init_protected_range = self._to_tensor(init_protected_range)
         self._init_protected_pop_range = self._to_tensor(init_protected_pop_range)
+        self._init_protected_ratio = self._init_protected_pop / torch.clamp(
+            self._init_pop, min=1.0
+        )
+        self._init_protected_ratio_denominator = torch.clamp(
+            1.0 - self._init_protected_ratio, min=1e-8
+        )
 
     def species_per_class(
-        self, risk_labels: torch.Tensor | None = None, normalize: bool = False
+            self, risk_labels: torch.Tensor | None = None, normalize: bool = False
     ) -> torch.Tensor:
         """Count species in each risk class.
 
@@ -199,6 +226,13 @@ class ExtinctionRisk:
             counts = counts / counts.sum()
 
         return counts
+
+    def species_per_class_dict(
+            self, risk_labels: torch.Tensor | None = None, normalize: bool = False
+    ) -> dict[str, torch.Tensor]:
+        """Count species in each risk class and return dictionary."""
+        c = self.species_per_class(risk_labels=risk_labels, normalize=normalize)
+        return {label: val.item() for label, val in zip(self._class_names, c)}
 
     def to(self, device: torch.device | str) -> ExtinctionRisk:
         """Move all tensors to specified device.
@@ -249,10 +283,10 @@ class ExtinctionRiskStatic(ExtinctionRisk):
     """
 
     def __init__(
-        self,
-        init_status: np.ndarray | torch.Tensor,
-        n_classes: int = 5,
-        device: torch.device | str = "cpu",
+            self,
+            init_status: np.ndarray | torch.Tensor,
+            n_classes: int = 5,
+            device: torch.device | str = "cpu",
     ):
         """Initialize static extinction risk.
 
@@ -264,7 +298,7 @@ class ExtinctionRiskStatic(ExtinctionRisk):
         super().__init__(init_status=init_status, n_classes=n_classes, device=device)
 
     def classify(
-        self, current_pop: torch.Tensor, protected_pop: torch.Tensor
+            self, current_pop: torch.Tensor, protected_pop: torch.Tensor
     ) -> torch.Tensor:
         """Return fixed initial status (ignores population data).
 

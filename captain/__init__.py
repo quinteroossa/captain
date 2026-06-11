@@ -7,12 +7,26 @@ __version__ = "3.0.0 beta - 20260304"
 # Data structures
 # Agents
 from captain.agents.feature_extractor import FeatureExtractor
-from captain.agents.policy_network import CellNN, PolicyNetwork
+from captain.agents.feature_extractor_cnn import FeatureExtractorCNN
+from captain.agents.policy_network import (
+    CellCNNPolicy,
+    CellNN,
+    PolicyNetwork,
+    RegionalPolicyNetwork,
+)
+from captain.agents.reward_aggregator import Rewards, NoRewards
 from captain.agents.rewards import (
     CalcReward,
     CalcRewardExtRisk,
     CalcRewardPersistentCost,
-    Rewards,
+    CalcRewardSpecieValue,
+)
+from captain.agents.spatial_cnn import SpatialCNN
+from captain.algorithms import TrainingLogger
+from captain.algorithms.budget_manager import (
+    GlobalBudgetManager,
+    RegionalBudgetManager,
+    NoBudgetManager,
 )
 
 # Algorithms
@@ -45,16 +59,26 @@ __all__ = [
     "BioEnv",
     # Agents
     "FeatureExtractor",
+    "FeatureExtractorCNN",
     "CellNN",
+    "CellCNNPolicy",
     "PolicyNetwork",
+    "RegionalPolicyNetwork",
+    "SpatialCNN",
     "CalcReward",
     "CalcRewardExtRisk",
     "CalcRewardPersistentCost",
+    "CalcRewardSpecieValue",
     "Rewards",
+    "NoRewards",
     # Algorithms
     "EpisodeRunner",
     "EvolStrategiesTrainer",
     "LearningScheduler",
+    "TrainingLogger",
+    "GlobalBudgetManager",
+    "RegionalBudgetManager",
+    "NoBudgetManager",
     # Utilities
     "grid_utils",
     "plots",

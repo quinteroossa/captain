@@ -55,6 +55,8 @@ class SpatialData:
             names: list[str] | np.ndarray | None = None,
             device: torch.device | str = "cpu",
             dtype: torch.dtype = torch.float32,
+            nan_to_num: bool = True,  # force any remaining NaN to 0
+            multi_per_step: np.ndarray | torch.Tensor | None = None,
     ):
         """Initialize SpatialData container.
 
@@ -69,6 +71,7 @@ class SpatialData:
             names: Names for each channel.
             device: PyTorch device ('cpu', 'cuda', 'mps').
             dtype: PyTorch dtype (default: float32).
+            multi_per_step: Mulitplier of data values per time steps
         """
         self.device = torch.device(device)
         self.dtype = dtype
@@ -105,6 +108,18 @@ class SpatialData:
         else:
             self._delta = None
 
+        # Multiplier per step
+        if multi_per_step is not None:
+            if isinstance(multi_per_step, np.ndarray):
+                multi_per_step = torch.from_numpy(multi_per_step.astype(np.float32))
+            if multi_per_step.ndim == 2:
+                multi_per_step = multi_per_step.unsqueeze()
+            multi_np = multi_per_step.numpy()
+            flat_multi, _, _ = grid_utils.flatten_grid(multi_np, mask)
+            self._multi = torch.from_numpy(flat_multi).to(self.device, self.dtype)
+        else:
+            self._multi = None
+
         # Min threshold per channel
         if min_threshold is not None:
             if isinstance(min_threshold, float):
@@ -114,6 +129,10 @@ class SpatialData:
             self._min_threshold_per_channel = min_threshold.to(self.device, self.dtype)
         else:
             self._min_threshold_per_channel = None
+
+        if nan_to_num:
+            self._data.nan_to_num_(nan=0)
+            self._delta.nan_to_num_(nan=0) if self._delta is not None else self._delta
 
         self._step = 0
 
@@ -157,7 +176,12 @@ class SpatialData:
         if self._delta is not None:
             self._data.add_(self._delta, alpha=time_step)
             self._data.clamp_(self._lower_bound, self._upper_bound)
-            self._step += 1
+
+        if self._multi is not None:
+            self._data.mul_(self._multi)
+            self._data.clamp_(self._lower_bound, self._upper_bound)
+
+        self._step += 1
 
     def update_nonzero_mask(self) -> None:
         """Update the mask of cells with any non-zero values."""
@@ -245,6 +269,7 @@ def plot_data_evolution(
         create_gif: bool = True,
         remove_png: bool = True,
         duration_ms=100,
+        figsize=(5, 6),
 ) -> None:
     """Plot temporal evolution of spatial data.
 
@@ -256,6 +281,7 @@ def plot_data_evolution(
         title: Plot title (default: channel name).
     """
     from captain.utils import plots
+
 
     dat = copy.deepcopy(data)
     skip = max(skip, 1)
@@ -278,6 +304,7 @@ def plot_data_evolution(
                 cmap=cmap,
                 vmin=vmin,
                 vmax=vmax,
+                figsize=figsize,
             )
             file_names.append(f_name)
     if create_gif:
@@ -335,6 +362,7 @@ def load_spatial_data_from_dir(
         upper_bound: float | None = None,
         n_time_steps: int | None = None,
         min_threshold: float | np.ndarray | torch.Tensor | None = None,
+        nan_to_num: bool = True,  # force any remaining NaN to 0
 ) -> SpatialData:
     maps, names = data_loader.load_maps_from_dir(
         dir,
@@ -366,13 +394,6 @@ def load_spatial_data_from_dir(
                 "ignore",
                 message="\nNames of loaded maps do not match, assuming they correspond.",
             )
-            # [
-            #     print(i)
-            #     for i in zip(
-            #         names[: np.minimum(len(names), 5)],
-            #         names_future[: np.minimum(len(names), 5)],
-            #     )
-            # ]
 
     else:
         delta_sdm = None
@@ -382,9 +403,10 @@ def load_spatial_data_from_dir(
         mask=mask,
         delta_per_step=delta_sdm,
         names=names,
-        lower_bound=0,
-        upper_bound=1,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
         min_threshold=min_threshold,
+        nan_to_num=nan_to_num,
     )
 
     return dat
