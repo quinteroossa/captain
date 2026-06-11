@@ -19,6 +19,9 @@ CAPTAIN is a reinforcement learning system for optimizing conservation and resto
 
 🎯 **Multi-objective Optimization:** Full support to quantify synergies and trade-offs between competing conservation and restoration targets.
 
+🤖 **Decentralized regional agents:** Features regional agents designed to optimize spatially-distributed conservation strategies.
+
+
 ### ⚠️ Notice
 **This repository contains a preview of CAPTAIN v.3.**
 
