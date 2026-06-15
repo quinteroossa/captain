@@ -1,14 +1,54 @@
 import numpy as np
+import rasterio
 import torch
-from numba import jit
 from scipy import sparse
 from scipy.sparse import csr_matrix
+from scipy.spatial import cKDTree
 from sklearn.neighbors import NearestNeighbors
 
 
+def dispersal_distances_threshold_coords_kdtree(
+    lambda_0: float, coords: tuple, threshold=3
+):
+    lat_flat = np.asarray(coords[0])
+    lon_flat = np.asarray(coords[1])
+    length = len(lat_flat)
+    exp_rate = 1.0 / lambda_0
+
+    # 1. Build spatial tree
+    points = np.column_stack((lat_flat, lon_flat))
+    tree = cKDTree(points)
+
+    # 2. Find all pairs within the Chebyshev distance (p=np.inf)
+    # This exactly mimics your `abs(lat_1-lat_2) <= threshold` logic
+    pairs = tree.query_pairs(r=threshold, p=np.inf, output_type="ndarray")
+
+    # Extract indices
+    i_idx = pairs[:, 0]
+    j_idx = pairs[:, 1]
+
+    # 3. Calculate actual Euclidean distances for valid pairs only
+    dists = np.sqrt(
+        (lat_flat[i_idx] - lat_flat[j_idx]) ** 2
+        + (lon_flat[i_idx] - lon_flat[j_idx]) ** 2
+    )
+    decay_data = np.exp(-exp_rate * dists)
+
+    # 4. query_pairs only returns i < j (one side of the matrix).
+    # We mirror the data for symmetry, and add the diagonal (i == j, distance 0).
+    rows = np.concatenate([i_idx, j_idx, np.arange(length)])
+    cols = np.concatenate([j_idx, i_idx, np.arange(length)])
+
+    diag_data = np.ones(length, dtype=np.float32)  # exp(0) = 1
+    data = np.concatenate([decay_data, decay_data, diag_data])
+
+    # 5. Build and return sparse matrix directly
+    return csr_matrix((data.astype(np.float32), (rows, cols)), shape=(length, length))
+
+
 def scipy_sparse_to_torch(
-        sparse_matrix: csr_matrix,
-        device: torch.device,
+    sparse_matrix: csr_matrix,
+    device: torch.device,
 ) -> torch.Tensor:
     """Convert scipy CSR sparse matrix to PyTorch sparse CSR tensor.
 
@@ -39,40 +79,14 @@ def scipy_sparse_to_torch(
     )
 
 
-@jit(nopython=True)
-def _dispersal_distances_threshold_coords(lambda_0: float, coords: tuple, threshold=3):
-    length = len(coords[0])
-    lat_flat, lon_flat = coords
-    exp_rate = 1.0 / lambda_0
-    dumping_dist = np.zeros((length, length), dtype=np.float32)
-    for i in range(0, length):
-        for n in range(0, length):
-            if (
-                    abs(lat_flat[i] - lat_flat[n]) <= threshold
-                    and abs(lon_flat[i] - lon_flat[n]) <= threshold
-            ):
-                # relative dispersal probability: always 1 at distance = 0
-                # the actual number of offspring is modulated by growth_rate
-                # print(i, j, n, m)
-                dumping_dist[i, n] = np.exp(
-                    -exp_rate
-                    * np.sqrt(
-                        (lat_flat[i] - lat_flat[n]) ** 2
-                        + (lon_flat[i] - lon_flat[n]) ** 2
-                    )
-                )
-
-    return dumping_dist
-
-
 def dispersal_distances_threshold_coords(lambda_0: float, coords: tuple, threshold=3):
-    return csr_matrix(
-        _dispersal_distances_threshold_coords(lambda_0, coords, threshold)
+    return dispersal_distances_threshold_coords_kdtree(
+        lambda_0=lambda_0, coords=coords, threshold=threshold
     )
 
 
 def save_dispersal_distances(
-        lambda_0: float, coords: tuple, threshold=3, filename: str | None = None
+    lambda_0: float, coords: tuple, threshold=3, filename: str | None = None
 ):
     m = dispersal_distances_threshold_coords(lambda_0, coords, threshold)
     if filename is None:
@@ -97,7 +111,9 @@ def flatten_grid(array_3d, mask=None):
     # Change np.isnan to (array_3d[0] != mask_value) if using a specific fill value
     if mask is not None:
         mask[mask == 0] = np.nan
-    mask = ~np.isnan(array_3d[0]) if mask is None else ~np.isnan(mask)
+        mask = ~np.isnan(mask)
+    else:
+        mask = ~np.isnan(array_3d[0])
 
     # 2. Get the x, y coordinates of the valid cells
     # np.where returns a tuple of (array_of_x, array_of_y)
@@ -131,7 +147,7 @@ def reconstruct_grid(data_2d, coords, original_spatial_shape):
 
 
 def compute_convolution_matrix(
-        coords: tuple[np.ndarray, np.ndarray], radius: int = 2
+    coords: tuple[np.ndarray, np.ndarray], radius: int = 2
 ) -> csr_matrix:
     """Compute a row-normalized sparse convolution matrix for spatial averaging.
 
@@ -173,7 +189,74 @@ def compute_convolution_matrix(
 
 
 def calculate_delta(
-        map_present: np.ndarray, map_future: np.ndarray, n_steps: int | float
+    map_present: np.ndarray, map_future: np.ndarray, n_steps: int | float
 ):
     delta = (map_future - map_present) / n_steps
     return delta
+
+
+def extract_regional_centroids(
+    tif_path: str, normalize: bool = True, device: str | torch.device = "cpu"
+) -> torch.Tensor:
+    """Reads a region map TIFF and returns a 3D PyTorch tensor of regional centroids.
+
+    Args:
+        tif_path: Path to the .tif file containing integer region IDs and NaNs.
+        normalize: If True, scales coordinates to [0, 1] relative to map size.
+        device: Target device for the tensor operations and output ('cpu' or 'cuda').
+
+    Returns:
+        A PyTorch tensor of shape (2, Height, Width) on the specified device.
+        Channel 0: X-coordinate of the region's centroid for every cell in that region.
+        Channel 1: Y-coordinate of the region's centroid for every cell in that region.
+    """
+    target_device = torch.device(device)
+
+    # 1. Load the TIFF file using rasterio, then immediately convert to PyTorch
+    with rasterio.open(tif_path) as src:
+        # Read band 1 as float array to cleanly support NaN values
+        np_map = src.read(1).astype(np.float32)
+
+        if src.nodata is not None:
+            np_map[np_map == src.nodata] = np.nan
+
+        # Move the tensor to your ML execution device right away
+        region_map = torch.from_numpy(np_map).to(target_device)
+
+    H, W = region_map.shape
+
+    # 2. Initialize a 3D tensor (2 channels, Height, Width) filled with NaNs
+    centroid_layers = torch.full(
+        (2, H, W), float("nan"), dtype=torch.float32, device=target_device
+    )
+
+    # 3. Find unique region IDs, filtering out the NaNs
+    valid_pixels = region_map[~torch.isnan(region_map)]
+    unique_regions = torch.unique(valid_pixels)
+
+    # 4. Calculate centroids and broadcast using PyTorch mechanisms
+    for region_id in unique_regions:
+        # Create a PyTorch boolean mask
+        region_mask = region_map == region_id
+
+        # torch.nonzero(..., as_tuple=True) mimics np.where() perfectly
+        y_indices, x_indices = torch.nonzero(region_mask, as_tuple=True)
+
+        if x_indices.numel() == 0:
+            continue
+
+        # CRITICAL: PyTorch requires coordinate indices to be explicitly converted to
+        # floats before computing a mean, otherwise it raises a RuntimeError.
+        centroid_x = x_indices.float().mean()
+        centroid_y = y_indices.float().mean()
+
+        # Optional: Normalize coordinates between 0.0 and 1.0
+        if normalize:
+            centroid_x /= W
+            centroid_y /= H
+
+        # In-place broadcast the scalar centroids back to the correct region slots
+        centroid_layers[0, region_mask] = centroid_x
+        centroid_layers[1, region_mask] = centroid_y
+
+    return centroid_layers

@@ -12,6 +12,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# HYPERPARAMETERS
+# target ~80% overlap among perturbations (meaning 20% variation)
+TARGET_IOU = 0.80
+ADAPTATION_RATE = 0.10
+
 
 @dataclass
 class LearningScheduler:
@@ -43,6 +48,9 @@ class LearningScheduler:
     min_alpha: float = 0.0001
     min_sigma: float = 0.01
 
+    target_iou_min: float = TARGET_IOU - (TARGET_IOU * 0.05)
+    target_iou_max: float = TARGET_IOU + (TARGET_IOU * 0.05)
+
     # Current values (set in post_init)
     alpha: float = field(init=False)
     sigma: float = field(init=False)
@@ -52,10 +60,19 @@ class LearningScheduler:
         self.alpha = self.initial_alpha
         self.sigma = self.initial_sigma
 
-    def step(self) -> None:
+    def step(self, jaccard_indx: None | float = None) -> None:
         """Apply one step of decay. Call at end of each epoch."""
+        if jaccard_indx is not None:
+            if jaccard_indx > self.target_iou_max:
+                # Solutions are too similar -> Increase exploration
+                self.sigma *= 1.0 + ADAPTATION_RATE
+            elif jaccard_indx < self.target_iou_min:
+                # Solutions are too chaotic -> Decrease noise
+                self.sigma *= 1.0 - ADAPTATION_RATE
+        else:
+            self.sigma = max(self.sigma * self.sigma_decay, self.min_sigma)
+
         self.alpha = max(self.alpha * self.alpha_decay, self.min_alpha)
-        self.sigma = max(self.sigma * self.sigma_decay, self.min_sigma)
 
     def reset(self) -> None:
         """Reset to initial values."""

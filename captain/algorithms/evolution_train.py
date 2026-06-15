@@ -6,15 +6,18 @@ conservation policies without gradients.
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing as mp
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 
 from captain.algorithms import scheduler as sched
+from captain.algorithms import train_utils as train_utils
 
 if TYPE_CHECKING:
     from captain.algorithms.episode import EpisodeRunner
@@ -28,7 +31,7 @@ def compute_evolutionary_update(
         noise: np.ndarray,
         alpha: float,
         sigma: float,
-        running_reward: float,
+        running_reward: float | None,
 ) -> np.ndarray:
     """Compute evolution strategies weight update.
 
@@ -43,6 +46,9 @@ def compute_evolutionary_update(
     Returns:
         Updated weight vector.
     """
+    if running_reward is None:
+        running_reward = 0
+
     if sigma == 0:
         return epoch_coeff
 
@@ -91,49 +97,6 @@ def execute_task(params: np.ndarray) -> tuple[dict[str, Any], float]:
     if _runner is None:
         raise RuntimeError("Worker not initialized. Call setup_worker first.")
     return _runner.run_episode(params)
-
-
-def summarize_episodes(results: list[tuple[dict, float]]) -> dict[str, Any]:
-    """Summarize info from all parallel episodes.
-
-    Args:
-        results: List of (info, total_reward) tuples.
-
-    Returns:
-        Dictionary with averaged metrics.
-    """
-    infos = [res[0] for res in results]
-
-    # Average rewards by type
-    all_rewards = np.array(
-        [
-            (
-                i["rewards"].numpy()
-                if isinstance(i["rewards"], torch.Tensor)
-                else np.array(i["rewards"])
-            )
-            for i in infos
-        ]
-    )
-    avg_rewards = np.mean(all_rewards, axis=0)
-
-    # Average reward history
-    all_histories = np.array([i["reward_history"] for i in infos])
-    avg_history = np.mean(all_histories, axis=0)
-
-    # Average protected cells
-    avg_protected = np.mean([i["protected_cells"] for i in infos])
-
-    avg_protection_matrix = np.mean(
-        np.array([i["protection_matrix"] for i in infos]), axis=0
-    )
-
-    return {
-        "avg_rewards_by_type": avg_rewards,
-        "avg_reward_history": avg_history,
-        "avg_protected_cells": avg_protected,
-        "avg_protection_matrix": avg_protection_matrix,
-    }
 
 
 class EvolStrategiesTrainer:
@@ -221,6 +184,92 @@ class EvolStrategiesTrainer:
                 f"{self.n} perturbations, {len(self.epoch_coeff)} parameters"
             )
 
+        self.reward_names = list_of_env_params[0].rewards.names
+
+    @staticmethod
+    def _apply_calibration_to_worker(multipliers, verbose=False):
+        """Helper to update the global _runner on each worker process."""
+        global _runner
+        if _runner is not None:
+            _runner.rewards.set_multipliers(multipliers, verbose=verbose)
+
+    def get_reward_calibrated_weights(
+            self, n_probes: int = 20, target_std: float = 1.0, verbose: bool = False
+    ) -> np.ndarray:
+        """
+        Heuristic Reward Scaling (or Calibration)
+        Runs probe episodes to equalize the 'volume' of different reward types.
+        """
+        if verbose:
+            logger.info("Calibrating reward scales with %d probes...", n_probes)
+
+        # 1. Use a wider variety of noise scales to 'wake up' all reward types
+        # Some probes are small tweaks, some are larger explorations
+        probe_params = []
+        for i in range(n_probes):
+            scale = 0.01 if i < (n_probes // 2) else 0.2
+            probe_params.append(
+                self.epoch_coeff + np.random.randn(len(self.epoch_coeff)) * scale
+            )
+        if self._use_pool:
+            results = self.pool.map(execute_task, probe_params)
+        else:
+            results = [self._runner.run_episode(p) for p in probe_params]
+        all_component_totals = np.array([res[0]["rewards"] for res in results])
+
+        # 2. Use Standard Deviation but with a floor to prevent explosion
+        component_stds = np.std(all_component_totals, axis=0)
+
+        # Identify components that never triggered (Std is 0)
+        # We set their multiplier to 1.0 (no change) so they don't dominate
+        # if they happen to trigger once later.
+        valid_mask = component_stds > 1e-6
+
+        multipliers = np.ones_like(component_stds)
+        multipliers[valid_mask] = target_std / component_stds[valid_mask]
+
+        # 3. Clip the multipliers
+        # Prevent any single reward from being boosted by more than, say, 1000x
+        # This prevents 'extinction' (if rare) from becoming 1,000,000x more
+        # important than 'cost' just because of one random event.
+        multipliers = np.clip(multipliers, 0.001, 1000.0)
+
+        if verbose:
+            logger.info("Calibration complete. Multipliers: %s", multipliers)
+            logger.debug("Probe component totals: %s", all_component_totals)
+            logger.debug("Means: %s", np.mean(all_component_totals, axis=0))
+            logger.debug("St dev: %s", np.std(all_component_totals, axis=0))
+
+        return multipliers
+
+    def calibrate_reward_scales(
+            self, multipliers: np.ndarray, verbose: bool = False
+    ) -> None:
+        # 4. Update the local worker rewards
+        # We use starmap to push these multipliers to the persistent workers
+        if self._use_pool:
+            self.pool.starmap(
+                self._apply_calibration_to_worker,
+                [
+                    (
+                        multipliers,
+                        verbose,
+                    )
+                    for _ in range(self.n)
+                ],
+            )
+        else:
+            # Sequential: update the runner owned by this process, then push
+            # the same calibration to any persistent worker copies.
+            self._runner.rewards.set_multipliers(multipliers, verbose=verbose)
+
+            if verbose:
+                logger.info("Directly calibrated %d runners in main process.", self.n)
+
+            for _ in range(self.n):
+                # Unpack the arguments manually from the tuple
+                self._apply_calibration_to_worker(multipliers, verbose)
+
     def train_epoch(self) -> tuple[float, dict[str, Any]]:
         """Run one training epoch.
 
@@ -265,11 +314,11 @@ class EvolStrategiesTrainer:
                 + (1 - self.epsilon_reward) * self.running_reward
         )
 
-        # 7. Update scheduler
-        self.scheduler.step()
+        # 7. Summarize
+        summary = train_utils.summarize_episodes(results)
 
-        # 8. Summarize
-        summary = summarize_episodes(results)
+        # 8. Update scheduler
+        self.scheduler.step(summary["jaccard_indx"])
 
         return avg_reward, summary
 
@@ -280,6 +329,103 @@ class EvolStrategiesTrainer:
             Current weight vector.
         """
         return self.epoch_coeff.copy()
+
+    def save_checkpoint(self, path: str | Path) -> None:
+        """Save trainer state to a .npz file.
+
+        Saves weights, running reward, scheduler state, and RNG state
+        so training can be resumed exactly.
+
+        Args:
+            path: File path (will be saved as .npz).
+        """
+        rng_state = self.rg.bit_generator.state
+        state = {
+            "epoch_coeff": self.epoch_coeff,
+            "running_reward": np.array(
+                self.running_reward if self.running_reward is not None else np.nan
+            ),
+            "epsilon_reward": np.array(self.epsilon_reward),
+            # RNG state: large ints stored as strings in byte arrays
+            "rng_state_state": np.void(str(rng_state["state"]["state"]).encode()),
+            "rng_state_inc": np.void(str(rng_state["state"]["inc"]).encode()),
+            "rng_has_uint32": np.array(rng_state["has_uint32"]),
+            "rng_uinteger": np.array(rng_state["uinteger"]),
+        }
+        # Flatten scheduler state into the dict
+        for k, v in self.scheduler.state_dict().items():
+            state[f"sched_{k}"] = np.array(v)
+
+        np.savez(path, **state)
+        logger.info("Saved checkpoint to %s", path)
+
+    def load_checkpoint(self, path: str | Path) -> None:
+        """Load trainer state from a .npz checkpoint.
+
+        Args:
+            path: Path to .npz checkpoint file.
+        """
+        data = np.load(path, allow_pickle=False)
+        self.epoch_coeff = data["epoch_coeff"].astype(np.float32)
+
+        rr = float(data["running_reward"])
+        self.running_reward = None if np.isnan(rr) else rr
+        self.epsilon_reward = float(data["epsilon_reward"])
+
+        # Restore RNG state
+        bg_state = self.rg.bit_generator.state
+        bg_state["state"]["state"] = int(bytes(data["rng_state_state"]).decode())
+        bg_state["state"]["inc"] = int(bytes(data["rng_state_inc"]).decode())
+        bg_state["has_uint32"] = int(data["rng_has_uint32"])
+        bg_state["uinteger"] = int(data["rng_uinteger"])
+        self.rg.bit_generator.state = bg_state
+
+        # Restore scheduler
+        sched_state = {
+            k.removeprefix("sched_"): float(data[k])
+            for k in data.files
+            if k.startswith("sched_")
+        }
+        self.scheduler.load_state_dict(sched_state)
+
+        logger.info(
+            "Loaded checkpoint from %s (running_reward=%.4f, alpha=%.6f, sigma=%.6f)",
+            path,
+            self.running_reward if self.running_reward is not None else float("nan"),
+            self.scheduler.alpha,
+            self.scheduler.sigma,
+        )
+
+    def save_reward_calibration(self, multipliers, file_path, verbose=False):
+        """Saves reward multipliers to a JSON file using reward names as keys."""
+        # Get names from the first runner's reward list
+        # Create name -> value mapping
+        calib_dict = {
+            name: float(val) for name, val in zip(self.reward_names, multipliers)
+        }
+
+        with open(file_path, "w") as f:
+            json.dump(calib_dict, f, indent=4)
+
+        if verbose:
+            logger.info("Reward calibration saved to %s", file_path)
+
+    def load_reward_calibration(self, file_path, verbose=False):
+        """Loads multipliers from JSON and aligns them with current reward order."""
+        with open(file_path, "r") as f:
+            calib_dict = json.load(f)
+
+        # Build the multiplier array based on current reward order
+        # Use reward names to ensure alignment
+        multipliers = []
+        for name in self.reward_names:
+            if name not in calib_dict:
+                raise ValueError(f"Reward '{name}' not found in calibration file!")
+            multipliers.append(calib_dict[name])
+
+        if verbose:
+            logger.info("Loaded calibration for: %s", list(calib_dict.keys()))
+        self.calibrate_reward_scales(np.array(multipliers), verbose=verbose)
 
     def close(self) -> None:
         """Clean up worker pool (no-op in sequential mode)."""

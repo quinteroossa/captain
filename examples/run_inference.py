@@ -13,7 +13,7 @@ Requirements:
 - Trained model (provided)
 
 """
-
+import logging
 import warnings
 
 # Filter out the specific PyTorch Sparse CSR beta warning
@@ -24,6 +24,13 @@ from pathlib import Path
 import numpy as np
 
 import captain as cn
+
+# Configure logging to print INFO messages to your console/Slurm log
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()],  # Sends output to the terminal/stderr
+)
 
 SEED = None
 # =============================================================================
@@ -42,9 +49,8 @@ FUTURE_DISTURBANCE_FILE = "env_layers/future_area_swept_disturbance.tif"
 COST_FILE = "env_layers/cost.tif"
 FUTURE_COST_FILE = "env_layers/future_cost.tif"
 DATA_MASK = "env_layers/area_mask.npy"
-results_dir = "inference_results"
 
-# Policy settings
+# Trained model and policy settings
 N_TIME_STEPS = 50
 TARGET_PROTECTED_CELLS = 17000
 CELLS_PER_STEP = 1000
@@ -56,21 +62,20 @@ DISPERSAL_WINDOW = 3
 MIN_HABITAT_SUITABILITY = 0.05  # can be an array (per-species values)
 
 # Output
-# Check data directory
-if not DATA_DIR.exists() or str(DATA_DIR) == "/path/to/your/data":
-    print("\nERROR: Please update DATA_DIR in this script to point to your data.")
-    print("       See the example data repository for the expected format.")
-    raise FileNotFoundError
+RES_DIR = DATA_DIR / "results"
+os.makedirs(RES_DIR, exist_ok=True)
 
-os.makedirs(DATA_DIR / results_dir, exist_ok=True)
-
-RES_DIR = DATA_DIR / results_dir
 LOG_FILE = "training_log.tsv"
 PLOT_DATA = True
 
 # =============================================================================
 # Episode Setup Function
 # =============================================================================
+# Check data directory
+if not DATA_DIR.exists() or str(DATA_DIR) == "/path/to/your/data":
+    print("\nERROR: Please update DATA_DIR in this script to point to your data.")
+    print("       See the example data repository for the expected format.")
+    raise FileNotFoundError
 
 # Load present and future species distribution maps
 mask, _ = cn.data_loader.load_map(DATA_DIR / DATA_MASK)
@@ -176,17 +181,23 @@ model = cn.CellNN(input_dim=feature_extractor.n_features, hidden_dim=16)
 policy = cn.PolicyNetwork(model, seed=SEED)
 policy.set_flat_weights(np.load(TRAINED_MODEL))
 
-rewards = cn.agents.rewards.NoRewards()
+rewards = cn.NoRewards()
 
 # Create episode runner
+# global manager (can be focused on individual regions)
+budget_manager = cn.GlobalBudgetManager(
+    total_target=TARGET_PROTECTED_CELLS,
+    cells_per_time_step=CELLS_PER_STEP,
+    feature_updates_per_time_step=1,
+)
+
 ep = cn.EpisodeRunner(
     env=env,
     feature_extractor=feature_extractor,
     policy_network=policy,
     rewards=rewards,
     n_steps=N_TIME_STEPS,
-    n_total_protected_cells=TARGET_PROTECTED_CELLS,
-    n_protected_cells_per_time_step=CELLS_PER_STEP,
+    budget_manager=budget_manager,
     save_protection_history=True,
 )
 
@@ -201,10 +212,19 @@ cn.plots.plot_grid(
     figsize=(6, 8),
 )
 
-protection._data = protection.data + res["protection_history"]
+history = (res["protection_history"] > 0).int() * (
+        1 + res["protection_history"].max() - res["protection_history"]
+)
+protection_res = cn.SpatialData(
+    data=np.zeros(disturbance.shape),
+    mask=mask,
+    lower_bound=0,
+    upper_bound=1,
+)
+protection_res._data += history
 
 cn.plots.plot_grid(
-    protection.reconstruct_grid[0] + (2024 * (protection.reconstruct_grid[0] > 0)),
+    protection_res.reconstruct_grid[0] + (2024 * (protection.reconstruct_grid[0] > 0)),
     title="protection matrix through time",
     outfile=RES_DIR / "protection_matrix_through_time",
     dpi=300,
@@ -237,8 +257,7 @@ ep = cn.EpisodeRunner(
     policy_network=policy,
     rewards=rewards,
     n_steps=N_TIME_STEPS,
-    n_total_protected_cells=0,
-    n_protected_cells_per_time_step=0,
+    budget_manager=cn.NoBudgetManager(),
     save_protection_history=True,
 )
 

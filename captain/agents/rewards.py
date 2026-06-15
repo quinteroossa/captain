@@ -65,6 +65,11 @@ class CalcReward:
         """Reset any internal state (called at episode start)."""
         pass
 
+    @property
+    def name(self) -> str:
+        """Reward name."""
+        return self._name
+
 
 class CalcRewardPersistentCost(CalcReward):
     """Reward based on cumulative protection costs.
@@ -203,116 +208,63 @@ class CalcRewardExtRisk(CalcReward):
             self._previous_status_counts = self._previous_status_counts.to(self.device)
         return self
 
+    def reset(self) -> None:
+        """Reset tracking state."""
+        self._previous_status_counts = None
 
-class Rewards:
-    """Aggregator for multiple reward components.
 
-    Combines multiple CalcReward instances and computes weighted sum.
-
-    Attributes:
-        episode_rewards: Cumulative rewards per component.
-        episode_reward_history: Per-step reward history.
-
-    Example:
-        >>> rewards = Rewards([
-        ...     CalcRewardExtRisk(threat_weights=[1, 0, -8, -16, -32]),
-        ...     CalcRewardPersistentCost(rescaler=0.1),
-        ... ])
-        >>> rewards.reset()
-        >>> total = rewards.calc_total_reward(env)
-    """
+class CalcRewardSpecieValue(CalcReward):
+    """Reward based on total amount of species 'value'"""
 
     def __init__(
             self,
-            reward_obj_list: list[CalcReward] | None,
-            discount_factor: float = 1.0,
-            reward_weights: np.ndarray | torch.Tensor | list | None = None,
-            cumulative_reward: bool = True,
+            trait_name: str,
+            name: str | None = None,
+            rescaler: float = 1.0,
+            positive: bool = True,
+            device: torch.device | str = "cpu",
+            trait_column_indx: int | None = None,  # if None set based on trait_name
+            protected_value: bool = False,  # If true only calculate the total value within protected areas
     ):
-        """Initialize reward aggregator.
+        """Initialize extinction risk reward.
 
         Args:
-            reward_obj_list: List of CalcReward instances.
-            discount_factor: Discount for future rewards (unused currently).
-            reward_weights: Weights for combining rewards (default: uniform).
-            cumulative_reward: If True, accumulate rewards across steps.
-        """
-        self._reward_obj_list = [] if reward_weights is None else list(reward_obj_list)
-        self._discount_factor = discount_factor
-        self._cumulative_reward = cumulative_reward
+            name: Reward identifier.
+            rescaler: Scaling factor.
+            positive: If True, improvements yield positive reward.
+            threat_weights: Weights per threat category [LC, NT, VU, EN, CR].
+                           Typically [1, 0, -8, -16, -32] to penalize extinctions.
+            device: PyTorch device.
 
-        if reward_weights is None:
-            self._reward_weights = torch.ones(len(self._reward_obj_list))
-        elif isinstance(reward_weights, (list, np.ndarray)):
-            self._reward_weights = torch.tensor(reward_weights, dtype=torch.float32)
+        Raises:
+            ValueError: If threat_weights not provided.
+        """
+        if name is None:
+            name = trait_name
+        super().__init__(name, rescaler, positive)
+        self.device = torch.device(device)
+        self._trait_name = trait_name
+        self._trait_column_indx = trait_column_indx
+        self._protected_value = protected_value
+
+    def calc_reward(self, env: BioEnv) -> float:
+        if self._trait_column_indx is None:
+            self._trait_column_indx = env.trait_map[self._trait_name]
+
+        # average value
+        if self._protected_value:
+            # Result is the average abundance per masked cell for each species
+            # 'max(1.0, sum)'
+            avg_abundance = (env.h @ env.protected_cells_mask.float()) / torch.clamp(
+                env.protected_cells_mask.sum(), min=1.0
+            )
+
+            # 3. Final dot product with traits
+            reward = torch.dot(
+                env._species_traits[:, self._trait_column_indx], avg_abundance
+            )
         else:
-            self._reward_weights = reward_weights
-
-        self.reset()
-
-    def calc_reward(self, env: BioEnv) -> None:
-        """Calculate rewards for current step.
-
-        Args:
-            env: Current environment.
-        """
-        rewards = [obj.calc_reward(env) for obj in self._reward_obj_list]
-        reward_tensor = torch.tensor(rewards, dtype=torch.float32)
-        self.episode_rewards.add_(reward_tensor)
-        self.episode_reward_history.append(rewards)
-
-    def reset(self) -> None:
-        """Reset for new episode."""
-        self.episode_rewards = torch.zeros(len(self._reward_obj_list))
-        self.episode_reward_history: list[list[float]] = []
-        for obj in self._reward_obj_list:
-            obj.reset()
-
-    def calc_total_reward(self, env: BioEnv) -> float:
-        """Calculate and return weighted total reward.
-
-        Args:
-            env: Current environment.
-
-        Returns:
-            Weighted sum of all reward components.
-        """
-        self.calc_reward(env)
-        return self.get_weighted_reward()
-
-    def get_weighted_reward(self) -> float:
-        """Get current weighted total reward.
-
-        Returns:
-            Weighted sum of episode rewards.
-        """
-        return (self.episode_rewards * self._reward_weights).sum().item()
-
-    @property
-    def names(self) -> list[str]:
-        """Names of all reward components."""
-        return [obj.name for obj in self._reward_obj_list]
-
-
-class NoRewards(Rewards):
-    def __init__(self, reward_obj_list=None):
-        super().__init__(reward_obj_list)
-        self.reset()
-
-    def calc_reward(self, env: BioEnv) -> None:
-        pass
-
-    def reset(self) -> None:
-        """Reset for new episode."""
-        self.episode_rewards = torch.zeros(1)
-        self.episode_reward_history: list[list[float]] = []
-
-    def calc_total_reward(self, env: BioEnv) -> float:
-        return self.get_weighted_reward()
-
-    def get_weighted_reward(self) -> float:
-        return 0
-
-    @property
-    def names(self) -> list[str]:
-        return ["no_reward"]
+            reward = torch.dot(
+                env._species_traits[:, self._trait_column_indx], env.h.mean(dim=1)
+            )
+        return reward.item() * self._rescaler

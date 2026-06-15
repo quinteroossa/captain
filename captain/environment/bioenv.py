@@ -11,6 +11,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 import torch
 from scipy import sparse as sp
 
@@ -40,21 +41,22 @@ class BioEnv:
     """
 
     def __init__(
-        self,
-        sdms: SpatialData,
-        disturbance: SpatialData,
-        costs: SpatialData,
-        protection_matrix: SpatialData,
-        growth_rates: np.ndarray | torch.Tensor,
-        sensitivity_rates: np.ndarray | torch.Tensor,
-        species_k: np.ndarray | torch.Tensor,
-        ext_risk: ExtinctionRisk,
-        mortality_rates: float | np.ndarray | torch.Tensor = 1.0,
-        dispersal_rates: float | np.ndarray | torch.Tensor = 1.0,
-        dispersal_cutoff: int = 3,
-        cached_dispersal_matrix: sp.csr_matrix | torch.Tensor | None = None,
-        species_traits: np.ndarray | torch.Tensor | None = None,
-        device: torch.device | str = "cpu",
+            self,
+            sdms: SpatialData,
+            disturbance: SpatialData,
+            costs: SpatialData,
+            protection_matrix: SpatialData,
+            growth_rates: np.ndarray | torch.Tensor,
+            sensitivity_rates: np.ndarray | torch.Tensor,
+            species_k: np.ndarray | torch.Tensor,
+            ext_risk: ExtinctionRisk,
+            mortality_rates: float | np.ndarray | torch.Tensor = 1.0,
+            dispersal_rates: float | np.ndarray | torch.Tensor = 1.0,
+            dispersal_cutoff: int = 3,
+            cached_dispersal_matrix: sp.csr_matrix | torch.Tensor | None = None,
+            species_traits: pd.DataFrame | None = None,
+            action_mask: SpatialData | None = None,
+            device: torch.device | str = "cpu",
     ):
         """Initialize biodiversity environment.
 
@@ -71,6 +73,9 @@ class BioEnv:
             cached_dispersal_matrix: Pre-computed dispersal matrix.
             species_traits: Additional species traits that can be used for feature extraction
                             but do not affect the evolution of the environment
+                            needs to be a pd.DataFrame with first column = species names
+                            then numeric values
+            action_mask: can't/won't protect or do any actions in these cells
             device: PyTorch device ('cpu', 'cuda', 'mps').
         """
         self.device = torch.device(device)
@@ -80,6 +85,10 @@ class BioEnv:
         self.disturbance = disturbance.to(self.device)
         self.protection_matrix = protection_matrix.to(self.device)
         self.costs = costs.to(self.device)
+        if action_mask is not None:
+            self.action_mask = action_mask.to(self.device)
+        else:
+            self.action_mask = None
 
         # Dimensions
         self.n_species = sdms.shape[0]
@@ -89,9 +98,18 @@ class BioEnv:
         self._growth_rates = self._to_tensor(growth_rates)
         self._species_sensitivity = self._to_tensor(sensitivity_rates)
         self._species_k = self._to_tensor(species_k)
-        self._species_traits = (
-            self._to_tensor(species_traits) if species_traits else None
-        )
+        self._species_traits_table = species_traits
+        if isinstance(species_traits, pd.DataFrame):
+            # 1. Identify numerical and non-numerical columns
+            numerical_df = species_traits.select_dtypes(include=[np.number])
+            # metadata_df = species_traits.select_dtypes(exclude=[np.number])
+            # 2. Convert only the numbers to your tensor
+            self._species_traits = self._to_tensor(numerical_df.to_numpy())
+            # 3. Create the mapping based on the filtered numerical columns
+            self.trait_map = {name: i for i, name in enumerate(numerical_df.columns)}
+        else:
+            self._species_traits = None
+            self.trait_map = None
 
         # Handle dispersal rates
         if isinstance(dispersal_rates, (int, float)):
@@ -103,9 +121,6 @@ class BioEnv:
         self._dispersal_cutoff = dispersal_cutoff
 
         # Set maximum mortality rate
-
-        np.mean(sensitivity_rates, axis=0)
-
         if isinstance(mortality_rates, (int, float)):
             self._death_rates = self._to_tensor(
                 np.repeat(mortality_rates, self.n_species)
@@ -246,7 +261,7 @@ class BioEnv:
                 dispersed_h = self._h.clone()
                 for s in range(self.n_species):
                     dispersed_h[s] = torch.sparse.mm(
-                        self._species_dist[s].t(), self._h[s : s + 1].t()
+                        self._species_dist[s].t(), self._h[s: s + 1].t()
                     ).squeeze()
 
         # Only update the cells that were below K
@@ -392,6 +407,17 @@ class BioEnv:
         return self.protection_matrix._nonzero_cells_mask
 
     @property
+    def no_action_mask(self) -> torch.Tensor:
+        """Boolean mask where no (further) actions can be made, shape (n_cells,)."""
+        if self.action_mask is None:
+            return self.protection_matrix._nonzero_cells_mask
+        else:
+            return torch.logical_or(
+                self.protection_matrix._nonzero_cells_mask,
+                self.action_mask._nonzero_cells_mask,
+            )
+
+    @property
     def protected_population(self) -> torch.Tensor:
         """Total population in protected areas per species, shape (n_species,)."""
         # (s, x) @ (x,) -> (s,)
@@ -409,6 +435,12 @@ class BioEnv:
     def protected_population_fraction(self) -> torch.Tensor:
         """Fraction of population in protected areas per species."""
         return self.protected_population / self._h.sum(dim=1)
+
+    @property
+    def species_extinction_risk(self) -> dict:
+        return self.ext_risk.species_per_class_dict(
+            self.current_ext_risk, normalize=False
+        )
 
     def to(self, device: torch.device | str) -> BioEnv:
         """Move environment to specified device.
@@ -435,7 +467,7 @@ class BioEnv:
             sparse_device = "cpu" if self.device.type == "mps" else self.device
             self._species_dist = [d.to(sparse_device) for d in self._species_dist]
         if hasattr(self, "_inv_lambdas") and isinstance(
-            self._inv_lambdas, torch.Tensor
+                self._inv_lambdas, torch.Tensor
         ):
             self._inv_lambdas = self._inv_lambdas.to(self.device)
 

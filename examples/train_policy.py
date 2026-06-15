@@ -19,14 +19,22 @@ import warnings
 # Filter out the specific PyTorch Sparse CSR beta warning
 warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta state")
 
-import csv
+import logging
 import os
 import time
 from pathlib import Path
-import torch
+
 import numpy as np
+import torch
 
 import captain as cn
+
+# Configure logging to print INFO messages to your console/Slurm log
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()],  # Sends output to the terminal/stderr
+)
 
 # Device configuration: run on GPU is available (needs CUDA)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -39,7 +47,6 @@ SEED = 42
 DATA_DIR = Path("/Users/quinteroossa/Documents/ucl_dissertation/captain_data/captain3data")  # <-- Change this!
 
 # Here using a subset of 30 species for testing
-# remove 'subset/' to run on full dataset
 PRESENT_SDMS_DIR = "subset/present_sdms"
 FUTURE_SDMS_DIR = "subset/future_sdms"
 SPECIES_TRAIT_FILE = "subset/species_tbl.csv"
@@ -50,12 +57,14 @@ FUTURE_COST_FILE = "env_layers/future_cost.tif"
 DATA_MASK = "env_layers/area_mask.npy"
 
 # Training and policy parameters
-N_EPOCHS = 3 # Number of training epochs
-N_PERTURBATIONS = 4  # Number of parallel episode evaluations (sequential on GPU)
-N_PARALLEL_WORKERS = 4  # Number of CPUs (if not CUDA)
+N_EPOCHS = 3
+N_PERTURBATIONS = 2  # Number of parallel episode evaluations (sequential on GPU)
+N_PROBES = 5  # Number of perturbations for reward calibration
+N_PARALLEL_WORKERS = 2  # Number of CPUs (if not CUDA)
 N_TIME_STEPS = 50  # Time duration of each episode
 TARGET_PROTECTED_CELLS = 17000  # Total number of cells to be protected
 CELLS_PER_STEP = 1000  # number of new cells protected at each time step
+CALIBRATE_REWARDS = True
 
 # Species parameters
 AVG_CARRYING_CAPACITY = 100  # 'individuals' per cells (* empirical relative abundance)
@@ -67,16 +76,10 @@ MIN_HABITAT_SUITABILITY = 0.05  # can be an array (per-species values)
 RESULTS_DIR = DATA_DIR / "training_results"
 LOG_FILE = "training_log.tsv"
 MODEL_FILE = "trained_weights.npy"
-PLOT_FEATURES = True
+CALIBRATION_FILE = DATA_DIR / "reward_calibration.json"
+PLOT_FEATURES = False
 PLOT_TRAIN_FREQ = 1  # plot intermediate protection results during training
-
-
-# Check data directory
-if not DATA_DIR.exists() or str(DATA_DIR) == "/path/to/your/data":
-    print("\nERROR: Please update DATA_DIR in this script to point to your data.")
-    print("       See the example data repository for the expected format.")
-    raise FileNotFoundError
-
+PLOT_DATA = False
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 if PLOT_FEATURES:
@@ -84,8 +87,6 @@ if PLOT_FEATURES:
     # os.makedirs(RESULTS_DIR_PLOTS, exist_ok=True)
     RESULTS_DIR_FEATURE_PLOTS = RESULTS_DIR / "feature_plots"
     os.makedirs(RESULTS_DIR_FEATURE_PLOTS, exist_ok=True)
-RESULTS_DIR_TRAIN_PLOTS = RESULTS_DIR / "training_plots"
-os.makedirs(RESULTS_DIR_TRAIN_PLOTS, exist_ok=True)
 
 
 # =============================================================================
@@ -100,6 +101,7 @@ def create_episode_runner() -> cn.EpisodeRunner:
     needed for one episode runner. Called once per parallel worker.
     """
     # Load present and future species distribution maps
+    global PLOT_DATA, PLOT_FEATURES
     mask, _ = cn.data_loader.load_map(DATA_DIR / DATA_MASK)
 
     sdm = cn.load_spatial_data_from_dir(
@@ -162,7 +164,7 @@ def create_episode_runner() -> cn.EpisodeRunner:
     )
 
     # Load or create dispersal matrix (cached for efficiency)
-    disp_file = DATA_DIR / f"dispersal_d{DISPERSAL_RATE}_t{DISPERSAL_WINDOW}.npz"
+    disp_file = DATA_DIR / f"dispersal_d{DISPERSAL_RATE}_t{DISPERSAL_WINDOW}_NEW.npz"
     if not disp_file.exists():
         print(f"Creating dispersal matrix: {disp_file}")
         cn.grid_utils.save_dispersal_distances(
@@ -202,6 +204,7 @@ def create_episode_runner() -> cn.EpisodeRunner:
         feature_extractor.plot_features(
             env, rescale=False, outdir=RESULTS_DIR_FEATURE_PLOTS
         )
+        PLOT_FEATURES = False
 
     env.ext_risk.species_per_class(env.current_ext_risk)
 
@@ -218,15 +221,28 @@ def create_episode_runner() -> cn.EpisodeRunner:
         reward_weights=np.array([1.0, 1.0]),
     )
 
+    if PLOT_DATA:
+        cn.plots.plot_grid(
+            np.sum(env.reconstruct_h_grid > 1, axis=0),
+            title="species richness",
+            outfile=RESULTS_DIR_FEATURE_PLOTS / "species_richness",
+        )
+        PLOT_DATA = False
+
     # Create episode runner
+    budget_manager = cn.GlobalBudgetManager(
+        total_target=TARGET_PROTECTED_CELLS,
+        cells_per_time_step=CELLS_PER_STEP,
+        feature_updates_per_time_step=1,
+    )
+
     ep = cn.EpisodeRunner(
         env=env,
         feature_extractor=feature_extractor,
         policy_network=policy,
         rewards=rewards,
         n_steps=N_TIME_STEPS,
-        n_total_protected_cells=TARGET_PROTECTED_CELLS,
-        n_protected_cells_per_time_step=CELLS_PER_STEP,
+        budget_manager=budget_manager,
     )
 
     # plot end features
@@ -248,6 +264,12 @@ def main():
     print("=" * 60)
     print("CAPTAIN-3 Training")
     print("=" * 60)
+
+    # Check data directory
+    if not DATA_DIR.exists() or str(DATA_DIR) == "/path/to/your/data":
+        print("\nERROR: Please update DATA_DIR in this script to point to your data.")
+        print("       See the example data repository for the expected format.")
+        raise FileNotFoundError
 
     print(f"\nDevice: {DEVICE}")
 
@@ -278,15 +300,24 @@ def main():
         seed=SEED,
     )
 
-    # Initialize log file
-    log_path = RESULTS_DIR / LOG_FILE
-    weights_path = RESULTS_DIR / MODEL_FILE
-    with open(log_path, "w", newline="") as f:
-        writer = csv.writer(f, delimiter="\t")
-        header = ["epoch", "running_reward", "avg_reward"]
-        header += [f"r_{r._name}" for r in episode.rewards._reward_obj_list]
-        header += ["protected_cells", "w_mean", "w_std"]
-        writer.writerow(header)
+    # Heuristic Reward Calibration
+    if CALIBRATE_REWARDS:
+        multipliers = trainer.get_reward_calibrated_weights(
+            n_probes=N_PROBES, verbose=True
+        )
+        trainer.save_reward_calibration(multipliers, CALIBRATION_FILE)
+
+    # Initialize Logger
+    trainer.load_reward_calibration(CALIBRATION_FILE, verbose=True)
+
+    logger = cn.algorithms.TrainingLogger(
+        trainer=trainer,
+        episode=episode,
+        results_dir=RESULTS_DIR,
+        log_file=LOG_FILE,
+        weights_file=MODEL_FILE,
+        plot_freq=PLOT_TRAIN_FREQ,
+    )
 
     # Training loop
     print(f"\nTraining for {N_EPOCHS} epochs...")
@@ -296,43 +327,15 @@ def main():
 
     for epoch in range(N_EPOCHS):
         t0 = time.time()
-
         avg_reward, summary = trainer.train_epoch()
-
-        if epoch % PLOT_TRAIN_FREQ == 0:
-            cn.plots.plot_grid(
-                summary["avg_protection_matrix"][0],
-                title=f"Epoch {epoch}",
-                outfile=RESULTS_DIR_TRAIN_PLOTS / f"epoch_{epoch}",
-                rescale_figure=1.0,
-                dpi=300,
-            )
-
         # Log progress
-        print(
-            f"Epoch {epoch:4d} | "
-            f"reward: {avg_reward:8.4f} | "
-            f"running: {trainer.running_reward:8.4f} | "
-            f"time: {time.time() - t0:.1f}s"
-        )
-
-        # Write to log file
-        row = [epoch, trainer.running_reward, avg_reward]
-        row += [r for r in summary["avg_rewards_by_type"]]
-        w = trainer.get_weights()
-        row += [summary["avg_protected_cells"], np.mean(w), np.std(w)]
-
-        with open(log_path, "a", newline="") as f:
-            writer = csv.writer(f, delimiter="\t")
-            writer.writerow(row)
-        # save weights
-        np.save(weights_path, trainer.get_weights())
+        logger.log_epoch(epoch, avg_reward, summary, time.time() - t0)
 
     # Summary
     print("-" * 60)
     print(f"Training complete in {time.time() - t_start:.1f}s")
-    print(f"Log saved to: {log_path}")
-    print(f"Weights saved to: {weights_path}")
+    print(f"Log saved to: {logger.log_path}")
+    print(f"Weights saved to: {logger.weights_path}")
     # TODO save scheduler checkpoint to restart
 
     # Cleanup
@@ -341,3 +344,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+# Check hex code (memory address)
+print(hex(id(trainer)))
+print(hex(id(logger.trainer)))
+"""

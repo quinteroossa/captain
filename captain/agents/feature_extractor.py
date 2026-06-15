@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 
 from captain.utils import grid_utils
@@ -48,6 +49,8 @@ class FeatureExtractor:
         self,
         env: BioEnv,
         feature_set: list[str] | None = None,
+        trait_features: list[str] | None = None,  # <- not fully implemented
+        static_features: np.ndarray | torch.Tensor | None = None,
         convolution: int = 5,
         keys_to_reset: list[str] | None = None,
         time_rescale: float = DEFAULT_TIME_RESCALE,
@@ -67,22 +70,13 @@ class FeatureExtractor:
 
         # Feature configuration
         if feature_set is None:
-            self._feature_set = [
-                "time",
-                "disturbance",
-                "disturbance_conv",
-                "species_richness",
-                "total_population",
-                "current_ext_risk",
-                "cost",
-                "protection_matrix",
-                "protection_matrix_conv",
-            ]
+            self._feature_set = self.default_feature_set
         else:
             self._feature_set = list(feature_set)
 
         # Build feature name list (expand current_ext_risk to per-class features)
         self._feature_names = list(self._feature_set)
+
         if "current_ext_risk" in self._feature_set:
             risk_names = [f"ext_risk_{i}" for i in range(env.ext_risk._n_classes)]
             idx = self._feature_set.index("current_ext_risk")
@@ -90,6 +84,21 @@ class FeatureExtractor:
             self._n_risk_classes = env.ext_risk._n_classes
         else:
             self._n_risk_classes = 0
+
+        if trait_features is not None:
+            self._feature_set = self._feature_set + trait_features
+            self._feature_names = self._feature_names + trait_features
+            self._use_trait_features = True
+        else:
+            self._use_trait_features = False
+
+        if isinstance(static_features, (np.ndarray, torch.Tensor)):
+            self._static_features = torch.as_tensor(static_features).to(self.device)
+            self._feature_names = self._feature_names + [
+                f"static_{k}" for k in range(self._static_features.size(0))
+            ]
+        else:
+            self._static_features = None
 
         # Feature map for quick lookup
         self.feature_map = {name: i for i, name in enumerate(self._feature_names)}
@@ -111,6 +120,7 @@ class FeatureExtractor:
 
         # Rescaling configuration
         if keys_to_reset is None:
+            # these features are not rescaled by mean/std -> set_rescaler()
             self.keys_to_reset = [
                 "time",
                 "disturbance",
@@ -125,6 +135,7 @@ class FeatureExtractor:
             self.feature_map[k] for k in self.keys_to_reset if k in self.feature_map
         ]
 
+        # time is rescaled differently
         self._time_rescale = time_rescale
 
         # Initialize rescaler
@@ -134,6 +145,20 @@ class FeatureExtractor:
     def n_features(self) -> int:
         """Number of features."""
         return self._n_features
+
+    @property
+    def default_feature_set(self):
+        return [
+            "time",
+            "disturbance",
+            "disturbance_conv",
+            "species_richness",
+            "total_population",
+            "current_ext_risk",
+            "cost",
+            "protection_matrix",
+            "protection_matrix_conv",
+        ]
 
     def extract_features(self, env: BioEnv) -> torch.Tensor:
         """Extract raw features from environment.
@@ -223,6 +248,10 @@ class FeatureExtractor:
             idx = self.feature_map["cost"]
             obs[idx] = env.costs.data.mean(dim=0)
 
+        if self._static_features is not None:
+            # add static features
+            obs[-self._static_features.size(0) :] = self._static_features
+
         return obs
 
     def observe(self, env: BioEnv) -> torch.Tensor:
@@ -270,7 +299,11 @@ class FeatureExtractor:
         self._rescaler_mean[self._features_to_reset] = 0.0
 
     def plot_features(
-        self, env: BioEnv, rescale: bool = True, outdir: str | Path | None = None
+        self,
+        env: BioEnv,
+        rescale: bool = True,
+        outdir: str | Path | None = None,
+        figsize=(5, 6),
     ) -> None:
         """Plot all features as spatial grids.
 
@@ -291,6 +324,7 @@ class FeatureExtractor:
                 feature_3d[i],
                 title=self._feature_names[i],
                 outfile=os.path.join(str(outdir), f"f_{self._feature_names[i]}.png"),
+                figsize=figsize,
             )
 
     def to(self, device: torch.device | str) -> FeatureExtractor:
