@@ -36,7 +36,7 @@ SEED = 42
 # =============================================================================
 
 # Data paths - UPDATE THESE to point to your data
-DATA_DIR = Path("/path/to/your/captain3data")  # <-- Change this!
+DATA_DIR = Path("/Users/quinteroossa/Documents/ucl_dissertation/captain_data/captain3data")  # <-- Change this!
 
 # Here using a subset of 30 species for testing
 # remove 'subset/' to run on full dataset

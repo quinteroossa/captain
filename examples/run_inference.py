@@ -31,8 +31,8 @@ SEED = None
 # =============================================================================
 
 # Data paths - UPDATE THESE to point to your data
-DATA_DIR = Path("/path/to/your/captain3data")  # <-- Change this!
-TRAINED_MODEL = Path("/path/to/your/trained_model/trained_weights.npy")  # <-- Change this!
+DATA_DIR = Path("/Users/quinteroossa/Documents/ucl_dissertation/captain_data/captain3data")   # <-- Change this!
+TRAINED_MODEL = Path("/Users/quinteroossa/Documents/ucl_dissertation/captain_data/captain3trained_model/trained_weights.npy")  # <-- Change this!
 
 PRESENT_SDMS_DIR = "present_sdms"
 FUTURE_SDMS_DIR = "future_sdms"
