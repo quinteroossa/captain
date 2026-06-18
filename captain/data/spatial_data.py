@@ -15,8 +15,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+from pyperlin import FractalPerlin2D
 
-from captain.utils import grid_utils, data_loader
+from captain.utils import data_loader, grid_utils
 
 if TYPE_CHECKING:
     pass
@@ -121,15 +122,9 @@ class SpatialData:
             self._multi = None
 
         # Min threshold per channel
-        if min_threshold is not None:
-            if isinstance(min_threshold, float):
-                min_threshold = np.repeat(min_threshold, self._data_shape[0])
-            if isinstance(min_threshold, np.ndarray):
-                min_threshold = torch.from_numpy(min_threshold.astype(np.float32))
-            self._min_threshold_per_channel = min_threshold.to(self.device, self.dtype)
-        else:
-            self._min_threshold_per_channel = None
+        self.reset_threshold(min_threshold)
 
+        # Set NaNs to 0
         if nan_to_num:
             self._data.nan_to_num_(nan=0)
             self._delta.nan_to_num_(nan=0) if self._delta is not None else self._delta
@@ -166,6 +161,16 @@ class SpatialData:
             )
         self._step = 0
         self.update_nonzero_mask()
+
+    def reset_threshold(self, min_threshold: float) -> None:
+        if min_threshold is not None:
+            if isinstance(min_threshold, float):
+                min_threshold = np.repeat(min_threshold, self._data_shape[0])
+            if isinstance(min_threshold, np.ndarray):
+                min_threshold = torch.from_numpy(min_threshold.astype(np.float32))
+            self._min_threshold_per_channel = min_threshold.to(self.device, self.dtype)
+        else:
+            self._min_threshold_per_channel = None
 
     def update(self, time_step: int = 1) -> None:
         """Apply temporal evolution.
@@ -256,8 +261,73 @@ class SpatialData:
         return self
 
 
+class StochasticSpatialData(SpatialData):
+    def __init__(
+            self,
+            *args,
+            risk_map: np.ndarray | torch.Tensor,
+            noise_generator: FractalPerlin2D,
+            binary_mask_2d: np.ndarray | torch.Tensor,
+            **kwargs,
+    ):
+        """
+        Subclass of SpatialData that handles risk-weighted, spatially coherent stochastic events.
+
+        Args:
+            risk_map: 2D or flattened tensor representing risk.
+            noise_generator: Instantiated FractalPerlin2D generator.
+            binary_mask_2d: 2D boolean tensor (True = valid simulation cell, False = NaN/boundary).
+        """
+        super().__init__(*args, **kwargs)
+
+        # Convert numpy to torch if needed
+        if isinstance(risk_map, np.ndarray):
+            risk_map = torch.from_numpy(risk_map.astype(np.float32))
+        self.risk_map = risk_map.to(self.device)
+        self.noise_generator = noise_generator
+
+        # Store the 2D mask explicitly so we can slice our 2D noise layers down to 1D
+        if isinstance(binary_mask_2d, np.ndarray):
+            binary_mask_2d = torch.from_numpy(binary_mask_2d)
+        self.binary_mask_2d = binary_mask_2d.to(self.device, dtype=torch.bool)
+
+    def apply_stochastic_events(self, intensity: float, impact_factor: float = 0.5):
+        """Generates a coherent risk mask and applies an environmental degradation event."""
+        # 1. Generate 2D Perlin noise: shape (1, H, W)
+        noise_2d = self.noise_generator()[
+            :, : self.binary_mask_2d.shape[0], : self.binary_mask_2d.shape[1]
+        ]
+
+        # Squeeze out the batch/channel dimension to get a clean (H, W) map
+        noise_2d = noise_2d.squeeze(0)
+
+        # 2. Threshold against risk map in 2D space
+        # High risk areas require very little noise to trigger an event
+        event_mask_2d = noise_2d < (1.0 - self.risk_map) * intensity
+
+        # 3. CRITICAL BRIDGING STEP:
+        # Filter the 2D event mask using our valid cell mask.
+        # This collapses the (H, W) grid into a 1D vector of shape (valid_cells,)
+        # matching your internal self._data structure perfectly.
+        flat_event_mask = event_mask_2d[self.binary_mask_2d]
+
+        # 4. Apply the event in-place to all channels of our valid data
+        # For example, scaling habitat suitability down by our impact factor where events hit
+        self._data[:, flat_event_mask] *= impact_factor
+
+    def update(
+            self, time_step: int = 1, trigger_events: bool = True, intensity: float = 0.3
+    ):
+        # reset previous steps
+        self.reset()
+
+        # If requested for this simulation step, layer the stochastic event on top
+        if trigger_events:
+            self.apply_stochastic_events(intensity=intensity)
+
+
 def plot_data_evolution(
-        data: SpatialData,
+        data: SpatialData | StochasticSpatialData,
         n_steps: int = 20,
         indx: int = 0,
         skip: int = 1,
@@ -282,7 +352,6 @@ def plot_data_evolution(
     """
     from captain.utils import plots
 
-
     dat = copy.deepcopy(data)
     skip = max(skip, 1)
     dat.reset()
@@ -290,11 +359,11 @@ def plot_data_evolution(
     if title is None:
         title = dat.names[indx]
     for i in range(n_steps):
-        if outfile is not None:
-            f_name = str(outfile) + "_t" + str(i).zfill(3) + ".png"
-
-        else:
-            f_name = None
+        f_name = (
+            str(outfile) + "_t" + str(i).zfill(3) + ".png"
+            if outfile is not None
+            else None
+        )
         dat.update()
         if i % skip == 0:
             plots.plot_grid(

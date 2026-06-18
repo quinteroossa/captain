@@ -13,6 +13,9 @@ warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta 
 import os
 from pathlib import Path
 import numpy as np
+
+from pyperlin import FractalPerlin2D
+
 import captain as cn
 
 SEED = None
@@ -167,6 +170,56 @@ cn.plots.plot_extinction_risk(
     outfile=RES_DIR / "Extinction_risk",
     dpi=200,
 )
+
+
+# Implement random disturbance
+d, n = cn.data_loader.load_map(DATA_DIR / DISTURBANCE_FILE)
+coherence = 8
+padded_height = (d.shape[0] // coherence + 1) * coherence
+padded_width = (d.shape[1] // coherence + 1) * coherence
+
+noise_generator = FractalPerlin2D(
+    shape=(1, padded_height, padded_width),
+    resolutions=[(8, 8), (8, 8)],  # defines coherence
+    factors=[0.5, 0.5],  # defines persistence
+)
+
+dat = cn.StochasticSpatialData(
+    data=mask,
+    risk_map=d,
+    mask=mask,
+    binary_mask_2d=np.nan_to_num(mask),
+    noise_generator=noise_generator,
+    delta_per_step=None,
+    names=n,
+    lower_bound=0,
+    upper_bound=1,
+    min_threshold=None,
+)
+
+dat.update()
+cn.plots.plot_grid(
+    dat.reconstruct_grid[0],
+    title="Rnd disturbance test",
+    outfile=RES_DIR / "disturbance_test",
+    vmin=0,
+    vmax=1,
+    background="white",
+    cmap="OrRd",
+)
+
+cn.data.spatial_data.plot_data_evolution(
+    dat,
+    n_steps=25,
+    skip=1,
+    title="Rnd disturbance",
+    outfile=RES_DIR / "Rnd_disturbance",
+    vmin=0,
+    vmax=1,
+    create_gif=True,
+    remove_png=True,
+)
+
 
 print("Done.")
 print("Plots seved in:", RES_DIR)
