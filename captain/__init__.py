@@ -14,7 +14,7 @@ from captain.agents.policy_network import (
     PolicyNetwork,
     RegionalPolicyNetwork,
 )
-from captain.agents.reward_aggregator import Rewards, NoRewards
+from captain.agents.reward_aggregator import NoRewards, Rewards
 from captain.agents.rewards import (
     CalcReward,
     CalcRewardExtRisk,
@@ -25,8 +25,8 @@ from captain.agents.spatial_cnn import SpatialCNN
 from captain.algorithms import TrainingLogger
 from captain.algorithms.budget_manager import (
     GlobalBudgetManager,
-    RegionalBudgetManager,
     NoBudgetManager,
+    RegionalBudgetManager,
 )
 
 # Algorithms
@@ -36,6 +36,7 @@ from captain.algorithms.scheduler import LearningScheduler
 from captain.data.extinction_risk import ExtinctionRisk, ExtinctionRiskStatic
 from captain.data.spatial_data import (
     SpatialData,
+    StochasticSpatialData,
     load_spatial_data,
     load_spatial_data_from_dir,
 )
