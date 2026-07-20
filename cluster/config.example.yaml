@@ -1,0 +1,24 @@
+# Copy to config.yaml and fill in your values. config.yaml is gitignored.
+
+cluster: milk               
+ucl_username: quinteroossa 
+scratch_dir: Scratch        
+
+job:
+  name: captain_run
+  time: "10:00:0"           # wall time HH:MM:S
+  mem: 16G
+  gpu: true
+  gpu_count: 1
+  specific_gpu: "titanv|rtx2080ti"   # milk GPU constraint
+
+project:
+  name: captain
+  module: examples.train_policy      # run as: python -m <module>
+  image_tag: cuda                    # produces captain-cuda.sif
+
+# Set to true to trigger the corresponding step when running job_script_generator.py
+build_image: false   # builds Docker image and converts to .sif (requires apptainer on Linux)
+deploy: false        # rsyncs code + .sif to cluster and submits the job
+
+wandb_key_file: cluster/wandb_api_key.txt   # DO NOT COMMIT this file
