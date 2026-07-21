@@ -6,7 +6,7 @@ subset: true                  # true = 30-species subset, false = full 583-speci
 n_time_steps: 50
 
 # Training
-n_epochs: 100
+n_epochs: 500
 n_perturbations: 32           # ES noise samples per epoch (8 is fine locally; 32 for cluster runs)
 n_parallel_workers: 4         # CPU workers (ignored on CUDA)
 n_probes: 20                  # probe episodes for reward calibration
