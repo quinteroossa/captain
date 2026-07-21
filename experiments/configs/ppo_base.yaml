@@ -1,0 +1,43 @@
+# PPO baseline configuration (deterministic disturbance — Scenario 3)
+# Run: uv run python experiments/train_ppo.py --data-dir /path/to/data --run-name ppo_baseline
+
+# Data
+subset: true
+n_time_steps: 50
+
+# Policy architecture
+hidden_dim: 64          # larger than ES (16) — backprop handles larger models well
+activation: relu
+
+# Action space
+k: 50                   # cells protected per step; episode = budget/k = 17000/50 = 340 steps
+
+# Budget
+target_protected_cells: 17000
+cells_per_step: 50      # must match k above
+
+# PPO hyperparameters
+n_updates: 500          # total policy update iterations
+rollout_steps: 128      # steps collected per rollout before updating
+n_epochs_per_update: 4  # PPO update passes over each rollout
+minibatch_size: 32      # number of steps per minibatch
+clip_coef: 0.2          # PPO clip epsilon
+gamma: 0.99             # discount factor
+gae_lambda: 0.95        # GAE lambda (bias-variance tradeoff)
+vf_coef: 0.5            # value loss coefficient
+ent_coef: 0.05          # entropy bonus coefficient (encourages exploration)
+max_grad_norm: 0.5      # gradient clipping
+
+# Optimiser
+lr: 3.0e-4
+lr_anneal: true         # linearly decay lr to 0 over training
+
+# Species simulation
+avg_carrying_capacity: 100
+dispersal_rate: 0.5
+dispersal_window: 3
+min_habitat_suitability: 0.05
+
+# Logging
+seed: 42
+plot_train_freq: 50

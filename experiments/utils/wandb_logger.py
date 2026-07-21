@@ -40,6 +40,13 @@ class WandbLogger:
             **ext_risk,
         })
 
+    def log_raw(self, data: dict) -> None:
+        """Log arbitrary key-value pairs directly (for PPO and other scripts)."""
+        if not self.enabled:
+            return
+        import wandb
+        wandb.log(data)
+
     def finish(self) -> None:
         if not self.enabled:
             return
