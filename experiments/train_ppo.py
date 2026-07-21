@@ -210,21 +210,23 @@ class RolloutBuffer:
     def __init__(self, rollout_steps: int, n_features: int, n_cells: int, k: int):
         self.T = rollout_steps
         self.k = k
-        self.obs      = torch.zeros(rollout_steps, n_features, n_cells)  # observations
-        self.actions  = torch.zeros(rollout_steps, k, dtype=torch.long)  # selected cell indices
-        self.logprobs = torch.zeros(rollout_steps)                        # log P(action | state)
+        self.obs      = torch.zeros(rollout_steps, n_features, n_cells)
+        self.actions  = torch.zeros(rollout_steps, k, dtype=torch.long)
+        self.logprobs = torch.zeros(rollout_steps)
         self.rewards  = torch.zeros(rollout_steps)
-        self.values   = torch.zeros(rollout_steps)                        # V(s) from critic
+        self.values   = torch.zeros(rollout_steps)
         self.dones    = torch.zeros(rollout_steps)
+        self.masks    = torch.zeros(rollout_steps, n_cells, dtype=torch.bool)  # constraint mask per step
         self._ptr = 0
 
-    def add(self, obs, action, logprob, reward, value, done):
+    def add(self, obs, action, logprob, reward, value, done, mask):
         self.obs[self._ptr]      = obs.cpu()
         self.actions[self._ptr]  = action.cpu()
         self.logprobs[self._ptr] = logprob.cpu().detach()
         self.rewards[self._ptr]  = reward
         self.values[self._ptr]   = value.cpu().detach()
         self.dones[self._ptr]    = float(done)
+        self.masks[self._ptr]    = mask.cpu()
         self._ptr += 1
 
     def full(self) -> bool:
@@ -371,7 +373,7 @@ def main():
                 obs_next, reward, done, info = captain_env.step(action)
                 ep_reward += reward
 
-                buffer.add(obs, action, logprob, reward, value, done)
+                buffer.add(obs, action, logprob, reward, value, done, constraint)
                 obs = obs_next
 
                 if done:
@@ -407,11 +409,12 @@ def main():
             for start in range(0, cfg["rollout_steps"], cfg["minibatch_size"]):
                 mb_idx = indices[start : start + cfg["minibatch_size"]]
 
-                mb_obs   = buffer.obs[mb_idx].to(device)       # (B, n_features, n_cells)
-                mb_acts  = buffer.actions[mb_idx].to(device)   # (B, k)
-                mb_logp  = buffer.logprobs[mb_idx].to(device)  # (B,)
+                mb_obs   = buffer.obs[mb_idx].to(device)
+                mb_acts  = buffer.actions[mb_idx].to(device)
+                mb_logp  = buffer.logprobs[mb_idx].to(device)
                 mb_adv   = advantages[mb_idx].to(device)
                 mb_ret   = returns[mb_idx].to(device)
+                mb_masks = buffer.masks[mb_idx].to(device)
 
                 # Recompute log-probs and values under current policy
                 new_logprobs = []
@@ -421,9 +424,10 @@ def main():
                 for i in range(len(mb_idx)):
                     obs_i    = mb_obs[i]
                     acts_i   = mb_acts[i]
+                    mask_i   = mb_masks[i]
                     scores_i, val_i = model(obs_i)
 
-                    lp = plackett_luce_log_prob(scores_i, acts_i)
+                    lp = plackett_luce_log_prob(scores_i, acts_i, mask_i)
                     new_logprobs.append(lp)
                     new_values.append(val_i)
 

@@ -3,7 +3,7 @@
 
 # Data
 subset: true
-n_time_steps: 50
+n_time_steps: 200
 
 # Policy architecture
 hidden_dim: 64          # larger than ES (16) — backprop handles larger models well
