@@ -175,7 +175,10 @@ def create_env(data_dir: Path, cfg: dict) -> CaptainPPOEnv:
             ),
             cn.CalcRewardPersistentCost(rescaler=float(1.0 / costs.data.sum())),
         ],
-        reward_weights=np.array([1.0, 1.0]),
+        # Cost penalty disabled for initial PPO training — it fires every step
+        # regardless of action quality, making all episodes look equally bad and
+        # zeroing out advantages. Re-enable once the policy is learning extinction risk.
+        reward_weights=np.array([1.0, 0.0]),
     )
 
     budget_manager = GlobalBudgetManager(
