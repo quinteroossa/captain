@@ -26,6 +26,7 @@ import yaml
 warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta state")
 
 import captain as cn
+from experiments.utils.wandb_logger import WandbLogger
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +53,10 @@ def parse_args():
                         help="Override device (cuda/cpu/mps)")
     parser.add_argument("--recalibrate", action="store_true", default=False,
                         help="Force recompute reward calibration even if file already exists")
+    parser.add_argument("--wandb", action="store_true", default=False,
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="captain-dissertation",
+                        help="W&B project name")
     return parser.parse_args()
 
 
@@ -273,6 +278,14 @@ def main():
         plot_freq=cfg["plot_train_freq"],
     )
 
+    wb = WandbLogger(
+        enabled=args.wandb,
+        project=args.wandb_project,
+        name=args.run_name,
+        config=cfg,
+        group="es_baseline",
+    )
+
     print(f"\nTraining for {cfg['n_epochs']} epochs...")
     print("-" * 60)
     t_start = time.time()
@@ -281,12 +294,14 @@ def main():
         t0 = time.time()
         avg_reward, summary = trainer.train_epoch()
         logger.log_epoch(epoch, avg_reward, summary, time.time() - t0)
+        wb.log(epoch, avg_reward, summary, trainer)
 
     print("-" * 60)
     print(f"Done in {time.time() - t_start:.1f}s")
     print(f"Log     : {logger.log_path}")
     print(f"Weights : {logger.weights_path}")
 
+    wb.finish()
     trainer.close()
 
 
