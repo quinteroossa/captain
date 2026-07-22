@@ -1,0 +1,220 @@
+nohup: ignoring input
+2026-07-22 16:32:20,028 [INFO] captain.algorithms.evolution_train: Initialized sequential trainer with 32 perturbations, 241 parameters
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/quinteroossa/.netrc.
+wandb: Currently logged in as: quinteroossa to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run 7bw7edd0
+wandb: Tracking run with wandb version 0.28.1
+wandb: Run data is saved locally in /home/quinteroossa/captain/wandb/run-20260722_163220-7bw7edd0
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run es_baseline_full
+wandb: ⭐️ View project at https://wandb.ai/quinteroossa/captain-dissertation
+wandb: 🚀 View run at https://wandb.ai/quinteroossa/captain-dissertation/runs/7bw7edd0
+2026-07-22 16:32:21,831 [INFO] captain.algorithms.evolution_train: Loaded calibration for: ['extinction_risk', 'cost']
+2026-07-22 16:32:21,832 [INFO] captain.agents.reward_aggregator: New reward calibration weights: tensor([1.4827, 0.0659], dtype=torch.float64)
+2026-07-22 16:32:21,833 [INFO] captain.algorithms.evolution_train: Directly calibrated 32 runners in main process.
+============================================================
+CAPTAIN — ES Training  |  run: es_baseline_full
+============================================================
+  Device     : cuda
+  Data       : /home/quinteroossa/captain_data/captain3data
+  Results    : results/es_baseline_full
+  Subset     : False
+  Epochs     : 500
+  Grid       : 58315 cells, 583 species
+  Features   : 13
+  Parameters : 241
+
+Using existing reward calibration: results/es_baseline_full/reward_calibration.json
+
+Reward calibration multipliers:
+  extinction_risk: 1.4827
+  cost: 0.0659
+
+Training for 500 epochs...
+------------------------------------------------------------
+Epoch    0 | reward:    -5.23 | running:    -5.23 | jaccard:     0.27 | time: 109.9s
+Epoch    1 | reward:    -2.51 | running:    -3.87 | jaccard:     0.83 | time: 109.9s
+Epoch    2 | reward:    -2.35 | running:    -3.11 | jaccard:     0.69 | time: 109.9s
+Epoch    3 | reward:    -2.19 | running:    -2.65 | jaccard:     0.78 | time: 109.8s
+Epoch    4 | reward:    -2.05 | running:    -2.35 | jaccard:     0.65 | time: 109.9s
+Epoch    5 | reward:    -1.93 | running:    -2.14 | jaccard:     0.69 | time: 109.8s
+Epoch    6 | reward:    -1.75 | running:    -1.94 | jaccard:     0.72 | time: 109.9s
+Epoch    7 | reward:    -1.62 | running:    -1.78 | jaccard:     0.62 | time: 109.8s
+Epoch    8 | reward:    -1.51 | running:    -1.65 | jaccard:     0.75 | time: 109.9s
+Epoch    9 | reward:    -1.48 | running:    -1.56 | jaccard:     0.76 | time: 109.8s
+Epoch   10 | reward:    -1.47 | running:    -1.52 | jaccard:     0.77 | time: 109.8s
+Epoch   11 | reward:    -1.47 | running:    -1.49 | jaccard:     0.73 | time: 109.9s
+Epoch   12 | reward:    -1.42 | running:    -1.45 | jaccard:     0.74 | time: 109.9s
+Epoch   13 | reward:    -1.42 | running:    -1.44 | jaccard:     0.72 | time: 109.8s
+Epoch   14 | reward:    -1.40 | running:    -1.42 | jaccard:     0.79 | time: 109.8s
+Epoch   15 | reward:    -1.38 | running:    -1.40 | jaccard:     0.79 | time: 109.8s
+Epoch   16 | reward:    -1.38 | running:    -1.39 | jaccard:     0.80 | time: 109.8s
+Epoch   17 | reward:    -1.38 | running:    -1.38 | jaccard:     0.79 | time: 109.8s
+Epoch   18 | reward:    -1.38 | running:    -1.38 | jaccard:     0.76 | time: 109.8s
+Epoch   19 | reward:    -1.36 | running:    -1.37 | jaccard:     0.88 | time: 109.8s
+Epoch   20 | reward:    -1.35 | running:    -1.36 | jaccard:     0.81 | time: 109.8s
+Epoch   21 | reward:    -1.39 | running:    -1.38 | jaccard:     0.77 | time: 109.8s
+Epoch   22 | reward:    -1.36 | running:    -1.37 | jaccard:     0.82 | time: 109.8s
+Epoch   23 | reward:    -1.38 | running:    -1.38 | jaccard:     0.76 | time: 109.8s
+Epoch   24 | reward:    -1.36 | running:    -1.37 | jaccard:     0.84 | time: 109.8s
+Epoch   25 | reward:    -1.38 | running:    -1.38 | jaccard:     0.74 | time: 109.8s
+Epoch   26 | reward:    -1.37 | running:    -1.37 | jaccard:     0.73 | time: 109.8s
+Epoch   27 | reward:    -1.34 | running:    -1.36 | jaccard:     0.79 | time: 109.8s
+Epoch   28 | reward:    -1.36 | running:    -1.36 | jaccard:     0.76 | time: 109.8s
+Epoch   29 | reward:    -1.33 | running:    -1.35 | jaccard:     0.85 | time: 109.8s
+Epoch   30 | reward:    -1.33 | running:    -1.34 | jaccard:     0.85 | time: 109.8s
+Epoch   31 | reward:    -1.37 | running:    -1.35 | jaccard:     0.83 | time: 109.8s
+Epoch   32 | reward:    -1.37 | running:    -1.36 | jaccard:     0.76 | time: 109.8s
+Epoch   33 | reward:    -1.35 | running:    -1.36 | jaccard:     0.79 | time: 109.8s
+Epoch   34 | reward:    -1.33 | running:    -1.35 | jaccard:     0.85 | time: 109.8s
+Epoch   35 | reward:    -1.34 | running:    -1.34 | jaccard:     0.81 | time: 109.8s
+Epoch   36 | reward:    -1.34 | running:    -1.34 | jaccard:     0.81 | time: 109.8s
+Epoch   37 | reward:    -1.33 | running:    -1.33 | jaccard:     0.83 | time: 109.9s
+Epoch   38 | reward:    -1.32 | running:    -1.32 | jaccard:     0.84 | time: 109.8s
+Epoch   39 | reward:    -1.33 | running:    -1.33 | jaccard:     0.79 | time: 109.8s
+Epoch   40 | reward:    -1.32 | running:    -1.32 | jaccard:     0.73 | time: 109.8s
+Epoch   41 | reward:    -1.32 | running:    -1.32 | jaccard:     0.82 | time: 109.8s
+Epoch   42 | reward:    -1.32 | running:    -1.32 | jaccard:     0.83 | time: 109.8s
+Epoch   43 | reward:    -1.32 | running:    -1.32 | jaccard:     0.80 | time: 109.8s
+Epoch   44 | reward:    -1.34 | running:    -1.33 | jaccard:     0.77 | time: 109.8s
+Epoch   45 | reward:    -1.32 | running:    -1.33 | jaccard:     0.84 | time: 109.8s
+Epoch   46 | reward:    -1.31 | running:    -1.32 | jaccard:     0.82 | time: 109.8s
+Epoch   47 | reward:    -1.32 | running:    -1.32 | jaccard:     0.84 | time: 109.8s
+Epoch   48 | reward:    -1.33 | running:    -1.32 | jaccard:     0.75 | time: 109.8s
+Epoch   49 | reward:    -1.34 | running:    -1.33 | jaccard:     0.76 | time: 109.8s
+Epoch   50 | reward:    -1.32 | running:    -1.32 | jaccard:     0.80 | time: 109.8s
+Epoch   51 | reward:    -1.31 | running:    -1.32 | jaccard:     0.83 | time: 109.8s
+Epoch   52 | reward:    -1.31 | running:    -1.31 | jaccard:     0.77 | time: 109.8s
+Epoch   53 | reward:    -1.31 | running:    -1.31 | jaccard:     0.87 | time: 109.8s
+Epoch   54 | reward:    -1.33 | running:    -1.32 | jaccard:     0.76 | time: 109.8s
+Epoch   55 | reward:    -1.31 | running:    -1.31 | jaccard:     0.81 | time: 109.8s
+Epoch   56 | reward:    -1.30 | running:    -1.31 | jaccard:     0.84 | time: 109.8s
+Epoch   57 | reward:    -1.29 | running:    -1.30 | jaccard:     0.84 | time: 109.8s
+Epoch   58 | reward:    -1.35 | running:    -1.32 | jaccard:     0.81 | time: 109.8s
+Epoch   59 | reward:    -1.31 | running:    -1.32 | jaccard:     0.83 | time: 128.1s
+Epoch   60 | reward:    -1.30 | running:    -1.31 | jaccard:     0.79 | time: 131.2s
+Epoch   61 | reward:    -1.32 | running:    -1.31 | jaccard:     0.81 | time: 131.3s
+Epoch   62 | reward:    -1.32 | running:    -1.32 | jaccard:     0.83 | time: 131.3s
+Epoch   63 | reward:    -1.33 | running:    -1.32 | jaccard:     0.81 | time: 131.3s
+Epoch   64 | reward:    -1.32 | running:    -1.32 | jaccard:     0.71 | time: 131.3s
+Epoch   65 | reward:    -1.31 | running:    -1.31 | jaccard:     0.83 | time: 131.2s
+Epoch   66 | reward:    -1.29 | running:    -1.30 | jaccard:     0.81 | time: 131.3s
+Epoch   67 | reward:    -1.31 | running:    -1.31 | jaccard:     0.82 | time: 131.3s
+Epoch   68 | reward:    -1.30 | running:    -1.30 | jaccard:     0.78 | time: 131.2s
+Epoch   69 | reward:    -1.28 | running:    -1.29 | jaccard:     0.81 | time: 131.2s
+Epoch   70 | reward:    -1.28 | running:    -1.29 | jaccard:     0.84 | time: 131.3s
+Epoch   71 | reward:    -1.30 | running:    -1.29 | jaccard:     0.83 | time: 131.3s
+Epoch   72 | reward:    -1.30 | running:    -1.30 | jaccard:     0.77 | time: 131.4s
+Epoch   73 | reward:    -1.28 | running:    -1.29 | jaccard:     0.82 | time: 131.2s
+Epoch   74 | reward:    -1.32 | running:    -1.30 | jaccard:     0.79 | time: 131.3s
+Epoch   75 | reward:    -1.29 | running:    -1.30 | jaccard:     0.81 | time: 131.4s
+Epoch   76 | reward:    -1.30 | running:    -1.30 | jaccard:     0.84 | time: 131.4s
+Epoch   77 | reward:    -1.33 | running:    -1.31 | jaccard:     0.73 | time: 131.4s
+Epoch   78 | reward:    -1.30 | running:    -1.31 | jaccard:     0.78 | time: 131.3s
+Epoch   79 | reward:    -1.30 | running:    -1.30 | jaccard:     0.78 | time: 131.4s
+Epoch   80 | reward:    -1.27 | running:    -1.29 | jaccard:     0.82 | time: 131.3s
+Epoch   81 | reward:    -1.32 | running:    -1.30 | jaccard:     0.76 | time: 131.4s
+Epoch   82 | reward:    -1.28 | running:    -1.29 | jaccard:     0.83 | time: 131.4s
+Epoch   83 | reward:    -1.28 | running:    -1.28 | jaccard:     0.82 | time: 131.4s
+Epoch   84 | reward:    -1.28 | running:    -1.28 | jaccard:     0.84 | time: 131.4s
+Epoch   85 | reward:    -1.27 | running:    -1.28 | jaccard:     0.82 | time: 131.4s
+Epoch   86 | reward:    -1.28 | running:    -1.28 | jaccard:     0.82 | time: 131.3s
+Epoch   87 | reward:    -1.28 | running:    -1.28 | jaccard:     0.84 | time: 131.3s
+Epoch   88 | reward:    -1.27 | running:    -1.28 | jaccard:     0.87 | time: 131.3s
+Epoch   89 | reward:    -1.29 | running:    -1.28 | jaccard:     0.81 | time: 131.3s
+Epoch   90 | reward:    -1.30 | running:    -1.29 | jaccard:     0.85 | time: 131.3s
+Epoch   91 | reward:    -1.31 | running:    -1.30 | jaccard:     0.85 | time: 131.4s
+Epoch   92 | reward:    -1.31 | running:    -1.31 | jaccard:     0.73 | time: 131.4s
+Epoch   93 | reward:    -1.31 | running:    -1.31 | jaccard:     0.79 | time: 131.4s
+Epoch   94 | reward:    -1.28 | running:    -1.30 | jaccard:     0.79 | time: 131.4s
+Epoch   95 | reward:    -1.31 | running:    -1.30 | jaccard:     0.76 | time: 131.3s
+Epoch   96 | reward:    -1.29 | running:    -1.29 | jaccard:     0.82 | time: 131.2s
+Epoch   97 | reward:    -1.29 | running:    -1.29 | jaccard:     0.82 | time: 131.2s
+Epoch   98 | reward:    -1.28 | running:    -1.28 | jaccard:     0.82 | time: 131.4s
+Epoch   99 | reward:    -1.28 | running:    -1.28 | jaccard:     0.81 | time: 131.3s
+Epoch  100 | reward:    -1.28 | running:    -1.28 | jaccard:     0.82 | time: 131.3s
+Epoch  101 | reward:    -1.26 | running:    -1.27 | jaccard:     0.86 | time: 131.3s
+Epoch  102 | reward:    -1.27 | running:    -1.27 | jaccard:     0.81 | time: 131.3s
+Epoch  103 | reward:    -1.28 | running:    -1.27 | jaccard:     0.83 | time: 131.3s
+Epoch  104 | reward:    -1.28 | running:    -1.28 | jaccard:     0.85 | time: 131.3s
+Epoch  105 | reward:    -1.31 | running:    -1.29 | jaccard:     0.78 | time: 131.3s
+Epoch  106 | reward:    -1.28 | running:    -1.29 | jaccard:     0.77 | time: 131.4s
+Epoch  107 | reward:    -1.31 | running:    -1.30 | jaccard:     0.80 | time: 131.4s
+Epoch  108 | reward:    -1.34 | running:    -1.32 | jaccard:     0.75 | time: 131.3s
+Epoch  109 | reward:    -1.28 | running:    -1.30 | jaccard:     0.78 | time: 131.3s
+Epoch  110 | reward:    -1.30 | running:    -1.30 | jaccard:     0.76 | time: 131.3s
+Epoch  111 | reward:    -1.28 | running:    -1.29 | jaccard:     0.81 | time: 131.2s
+Epoch  112 | reward:    -1.27 | running:    -1.28 | jaccard:     0.86 | time: 131.4s
+Epoch  113 | reward:    -1.28 | running:    -1.28 | jaccard:     0.81 | time: 131.3s
+Epoch  114 | reward:    -1.37 | running:    -1.32 | jaccard:     0.73 | time: 131.2s
+Epoch  115 | reward:    -1.29 | running:    -1.31 | jaccard:     0.84 | time: 131.4s
+Epoch  116 | reward:    -1.31 | running:    -1.31 | jaccard:     0.82 | time: 131.3s
+Epoch  117 | reward:    -1.29 | running:    -1.30 | jaccard:     0.85 | time: 131.4s
+Epoch  118 | reward:    -1.33 | running:    -1.31 | jaccard:     0.80 | time: 131.3s
+Epoch  119 | reward:    -1.28 | running:    -1.30 | jaccard:     0.84 | time: 131.3s
+Epoch  120 | reward:    -1.31 | running:    -1.30 | jaccard:     0.81 | time: 131.4s
+Epoch  121 | reward:    -1.33 | running:    -1.32 | jaccard:     0.83 | time: 131.4s
+Epoch  122 | reward:    -1.28 | running:    -1.30 | jaccard:     0.79 | time: 131.3s
+Epoch  123 | reward:    -1.32 | running:    -1.31 | jaccard:     0.72 | time: 131.4s
+Epoch  124 | reward:    -1.30 | running:    -1.31 | jaccard:     0.80 | time: 131.3s
+Epoch  125 | reward:    -1.31 | running:    -1.31 | jaccard:     0.82 | time: 131.3s
+Epoch  126 | reward:    -1.29 | running:    -1.30 | jaccard:     0.81 | time: 131.2s
+Epoch  127 | reward:    -1.33 | running:    -1.31 | jaccard:     0.75 | time: 131.3s
+Epoch  128 | reward:    -1.28 | running:    -1.30 | jaccard:     0.82 | time: 131.4s
+Epoch  129 | reward:    -1.28 | running:    -1.29 | jaccard:     0.84 | time: 131.3s
+Epoch  130 | reward:    -1.28 | running:    -1.29 | jaccard:     0.83 | time: 131.3s
+Epoch  131 | reward:    -1.28 | running:    -1.28 | jaccard:     0.79 | time: 131.2s
+Epoch  132 | reward:    -1.30 | running:    -1.29 | jaccard:     0.79 | time: 131.2s
+Epoch  133 | reward:    -1.31 | running:    -1.30 | jaccard:     0.84 | time: 131.2s
+Epoch  134 | reward:    -1.29 | running:    -1.30 | jaccard:     0.81 | time: 131.2s
+Epoch  135 | reward:    -1.29 | running:    -1.29 | jaccard:     0.80 | time: 131.0s
+Epoch  136 | reward:    -1.28 | running:    -1.29 | jaccard:     0.84 | time: 131.3s
+Epoch  137 | reward:    -1.29 | running:    -1.29 | jaccard:     0.83 | time: 131.3s
+Epoch  138 | reward:    -1.30 | running:    -1.29 | jaccard:     0.77 | time: 131.3s
+Epoch  139 | reward:    -1.29 | running:    -1.29 | jaccard:     0.78 | time: 131.2s
+Epoch  140 | reward:    -1.30 | running:    -1.29 | jaccard:     0.79 | time: 131.3s
+Epoch  141 | reward:    -1.31 | running:    -1.30 | jaccard:     0.85 | time: 131.2s
+Epoch  142 | reward:    -1.31 | running:    -1.31 | jaccard:     0.73 | time: 131.3s
+Epoch  143 | reward:    -1.30 | running:    -1.30 | jaccard:     0.83 | time: 131.4s
+Epoch  144 | reward:    -1.29 | running:    -1.29 | jaccard:     0.79 | time: 131.4s
+Epoch  145 | reward:    -1.33 | running:    -1.31 | jaccard:     0.81 | time: 131.3s
+Epoch  146 | reward:    -1.29 | running:    -1.30 | jaccard:     0.81 | time: 131.3s
+Epoch  147 | reward:    -1.29 | running:    -1.29 | jaccard:     0.83 | time: 131.3s
+Epoch  148 | reward:    -1.30 | running:    -1.30 | jaccard:     0.76 | time: 131.3s
+Epoch  149 | reward:    -1.29 | running:    -1.29 | jaccard:     0.84 | time: 131.3s
+Epoch  150 | reward:    -1.32 | running:    -1.31 | jaccard:     0.75 | time: 131.3s
+Epoch  151 | reward:    -1.28 | running:    -1.29 | jaccard:     0.83 | time: 131.3s
+Epoch  152 | reward:    -1.29 | running:    -1.29 | jaccard:     0.82 | time: 131.3s
+Epoch  153 | reward:    -1.28 | running:    -1.29 | jaccard:     0.82 | time: 131.2s
+Epoch  154 | reward:    -1.28 | running:    -1.29 | jaccard:     0.81 | time: 131.2s
+Epoch  155 | reward:    -1.29 | running:    -1.29 | jaccard:     0.83 | time: 131.2s
+Epoch  156 | reward:    -1.30 | running:    -1.30 | jaccard:     0.78 | time: 131.3s
+Epoch  157 | reward:    -1.30 | running:    -1.30 | jaccard:     0.75 | time: 131.4s
+Epoch  158 | reward:    -1.28 | running:    -1.29 | jaccard:     0.84 | time: 131.3s
+Epoch  159 | reward:    -1.27 | running:    -1.28 | jaccard:     0.82 | time: 131.3s
+Epoch  160 | reward:    -1.31 | running:    -1.30 | jaccard:     0.75 | time: 131.4s
+Epoch  161 | reward:    -1.28 | running:    -1.29 | jaccard:     0.84 | time: 131.3s
+Epoch  162 | reward:    -1.28 | running:    -1.28 | jaccard:     0.87 | time: 131.2s
+Epoch  163 | reward:    -1.28 | running:    -1.28 | jaccard:     0.84 | time: 131.2s
+Epoch  164 | reward:    -1.28 | running:    -1.28 | jaccard:     0.82 | time: 131.3s
+Epoch  165 | reward:    -1.28 | running:    -1.28 | jaccard:     0.82 | time: 131.4s
+Epoch  166 | reward:    -1.30 | running:    -1.29 | jaccard:     0.78 | time: 131.4s
+Epoch  167 | reward:    -1.28 | running:    -1.29 | jaccard:     0.86 | time: 131.3s
+Epoch  168 | reward:    -1.30 | running:    -1.29 | jaccard:     0.75 | time: 131.3s
+Epoch  169 | reward:    -1.29 | running:    -1.29 | jaccard:     0.86 | time: 131.3s
+Epoch  170 | reward:    -1.31 | running:    -1.30 | jaccard:     0.76 | time: 131.3s
+Epoch  171 | reward:    -1.29 | running:    -1.30 | jaccard:     0.78 | time: 131.3s
+Epoch  172 | reward:    -1.28 | running:    -1.29 | jaccard:     0.79 | time: 131.4s
+Epoch  173 | reward:    -1.30 | running:    -1.29 | jaccard:     0.82 | time: 131.2s
+Epoch  174 | reward:    -1.29 | running:    -1.29 | jaccard:     0.85 | time: 131.4s
+Epoch  175 | reward:    -1.31 | running:    -1.30 | jaccard:     0.75 | time: 131.3s
+Epoch  176 | reward:    -1.27 | running:    -1.29 | jaccard:     0.83 | time: 131.3s
+Epoch  177 | reward:    -1.27 | running:    -1.28 | jaccard:     0.83 | time: 131.3s
+Epoch  178 | reward:    -1.26 | running:    -1.27 | jaccard:     0.85 | time: 131.3s
+Epoch  179 | reward:    -1.32 | running:    -1.30 | jaccard:     0.75 | time: 131.3s
+Epoch  180 | reward:    -1.29 | running:    -1.29 | jaccard:     0.82 | time: 131.3s
+Epoch  181 | reward:    -1.27 | running:    -1.28 | jaccard:     0.85 | time: 131.3s
+Epoch  182 | reward:    -1.29 | running:    -1.28 | jaccard:     0.84 | time: 131.3s
+Epoch  183 | reward:    -1.33 | running:    -1.30 | jaccard:     0.79 | time: 131.2s
+Epoch  184 | reward:    -1.27 | running:    -1.29 | jaccard:     0.79 | time: 131.3s
+Epoch  185 | reward:    -1.34 | running:    -1.31 | jaccard:     0.73 | time: 131.3s
