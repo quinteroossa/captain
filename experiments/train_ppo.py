@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -175,10 +176,10 @@ def create_env(data_dir: Path, cfg: dict) -> CaptainPPOEnv:
             ),
             cn.CalcRewardPersistentCost(rescaler=float(1.0 / costs.data.sum())),
         ],
-        # Cost penalty disabled for initial PPO training — it fires every step
-        # regardless of action quality, making all episodes look equally bad and
-        # zeroing out advantages. Re-enable once the policy is learning extinction risk.
-        reward_weights=np.array([1.0, 0.0]),
+        reward_weights=np.array([
+            cfg.get("reward_weight_ext_risk", 1.0),
+            cfg.get("reward_weight_cost", 1.0),
+        ]),
     )
 
     budget_manager = GlobalBudgetManager(
@@ -196,6 +197,54 @@ def create_env(data_dir: Path, cfg: dict) -> CaptainPPOEnv:
         k=cfg["k"],
         device=device,
     )
+
+
+# =============================================================================
+# Reward calibration
+# =============================================================================
+
+def calibrate_rewards(captain_env, model, cfg, device) -> np.ndarray:
+    """Run probe episodes with the untrained policy to calibrate reward scales.
+
+    Mirrors ES trainer's get_reward_calibrated_weights(): normalises each
+    reward component to std=1 across probes, preventing one component from
+    dominating the signal purely due to scale differences.
+    """
+    n_probes = cfg.get("n_calibration_probes", 20)
+    k = cfg["k"]
+    all_totals = []
+
+    model.eval()
+    print(f"\nCalibrating rewards with {n_probes} probe episodes...")
+    for i in range(n_probes):
+        obs = captain_env.reset()
+        done = False
+        with torch.no_grad():
+            while not done:
+                scores, _ = model(obs.to(device))
+                constraint = captain_env.constraint_mask
+                action, _ = plackett_luce_sample(scores, k, constraint)
+                obs, _, done, _ = captain_env.step(action)
+        # Raw per-component sum over the episode (before weights/calibration)
+        history = torch.tensor(captain_env.rewards.episode_reward_history, dtype=torch.float32)
+        all_totals.append(history.sum(dim=0).numpy())
+        if (i + 1) % 5 == 0:
+            print(f"  probe {i+1}/{n_probes}")
+
+    all_totals = np.array(all_totals)  # (n_probes, n_components)
+    stds = np.std(all_totals, axis=0)
+    valid = stds > 1e-6
+    multipliers = np.ones_like(stds)
+    multipliers[valid] = 1.0 / stds[valid]
+    multipliers = np.clip(multipliers, 0.001, 1000.0)
+
+    names = [r._name for r in captain_env.rewards._reward_obj_list]
+    print("Calibration multipliers:")
+    for name, val, std in zip(names, multipliers, stds):
+        flag = "" if std > 1e-6 else "  ← NEVER TRIGGERED"
+        print(f"  {name}: {val:.4f}  (probe std={std:.4f}){flag}")
+
+    return multipliers
 
 
 # =============================================================================
@@ -340,6 +389,22 @@ def main():
     log_path = results_dir / "training_log.tsv"
     with open(log_path, "w") as f:
         f.write("update\tpolicy_loss\tvalue_loss\tentropy\ttotal_loss\treward_mean\ttime\n")
+
+    # Reward calibration
+    calibration_file = results_dir / "reward_calibration.json"
+    if not calibration_file.exists():
+        multipliers = calibrate_rewards(captain_env, model, cfg, device)
+        calib_dict = {r._name: float(m) for r, m in zip(captain_env.rewards._reward_obj_list, multipliers)}
+        with open(calibration_file, "w") as f:
+            json.dump(calib_dict, f, indent=4)
+    else:
+        print(f"\nUsing existing reward calibration: {calibration_file}")
+        with open(calibration_file) as f:
+            calib_dict = json.load(f)
+        multipliers = np.array(list(calib_dict.values()))
+
+    captain_env.rewards._reward_calibration = torch.tensor(multipliers, dtype=torch.float32)
+    wb.log_raw({"calibration/" + k: v for k, v in calib_dict.items()})
 
     print(f"\nTraining for {cfg['n_updates']} updates...")
     print("-" * 60)

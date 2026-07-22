@@ -160,30 +160,118 @@ create aleatoric uncertainty. Alternatives considered:
 
 ## Scenario 3 — PPO + Stochastic Disturbance (Sampled Intensity)
 
-**Script:** `experiments/train_ppo_stochastic.py` (to be created)
-**Config:** `experiments/configs/ppo_stochastic.yaml` (to be created)
-**Status:** Planned. Blocked on PPO implementation (RQ1 blocker: CellNN
-produces no log-prob; fix is K=1 cell selection per step).
+**Script:** `experiments/train_ppo.py`
+**Config:** `experiments/configs/ppo_base.yaml`
+**Status:** Implemented. Running on full dataset (583 species, 58,315 cells).
 
 ### What it is
-Replace ES with PPO while keeping the Scenario 2 stochastic environment.
-PPO requires:
-- K=1 cell selection per step (Daniele's suggestion) → categorical distribution
-  → log-prob available → policy gradient computable
-- Value head added to CellNN (shared trunk, separate output heads for actor/critic)
-- GAE for advantage estimation across the episode
-- PPO clip update with multiple minibatch epochs per rollout
+Replace ES with PPO while keeping the stochastic environment from Scenario 2.
 
-### Why this scenario
-Tests RQ1 (PPO vs ES) under identical stochastic conditions. Comparing
-Scenario 3 vs Scenario 2 isolates the effect of the optimiser, keeping the
-environment identical.
+**Log-prob problem solved — Plackett-Luce (K=50):**
+The original CAPTAIN CellNN uses greedy top-K selection, which is deterministic
+(no probability distribution → no log-prob → no policy gradient). Solved by
+switching to Plackett-Luce sampling: model K sequential categorical draws
+without replacement. Log P = sum of K per-step log-softmax values.
+K=50 chosen as a compromise between K=1 (too slow to cover 17K budget) and
+K=1000 (too expensive per step for Plackett-Luce's O(K·N) loop).
 
-**Architecture decision (to confirm with James):**
-- Shared trunk: same CellNN base → policy head + value head
-- Hidden dim: increase from 16 to 64 for PPO (backprop handles larger models
-  well; ES was kept small to reduce search space)
-- Discount factor γ: currently unused (set to 1.0) — needs decision for PPO
+### Architecture — `ActorCriticCellNN`
+
+#### Overview
+
+CAPTAIN's environment produces a state observation of shape `(13, 58315)` —
+13 features per cell across 58,315 valid spatial cells. The network must
+produce two outputs: a score per cell (for action selection) and a scalar
+state value (for advantage estimation).
+
+The architecture is a **shared-trunk actor-critic**: one MLP processes all
+cells identically, and two separate heads read from the shared embeddings.
+
+```
+Input: (13 features, 58,315 cells)
+  ↓ transpose → (58315, 13)          each cell treated as one data point
+
+Shared trunk (applied independently to each cell):
+  Linear(13 → 64) → ReLU
+  Linear(64 → 64) → ReLU
+  → embeddings: (58315, 64)
+
+      ┌─────────────────────────────────────┐
+      │                                     │
+  Policy head                          Value head
+  Linear(64 → 1)               attention_head(64 → 1) → softmax over cells
+  → per-cell scores (58315,)   → weighted sum → pooled (64,)
+  → Plackett-Luce(K=50)        → Linear(64 → 1) → scalar V(s)
+  → action + log P
+```
+
+#### Feature breakdown (n_features = 13)
+
+| Feature | Description |
+|---|---|
+| `time` | Normalised timestep (t / n_time_steps×0.5) |
+| `disturbance` | Raw disturbance value per cell |
+| `disturbance_conv` | Spatially smoothed disturbance (convolved) |
+| `species_richness` | Number of species present in cell |
+| `total_population` | Total population across all species in cell |
+| `ext_risk_0…4` | Count of species in each IUCN category in cell (5 features) |
+| `cost` | Protection cost per cell |
+| `protection_matrix` | Whether cell is currently protected (0/1) |
+| `protection_matrix_conv` | Spatially smoothed protection coverage |
+
+Note: extinction risk is encoded as **per-category counts per cell** (5 values),
+not per-species (which would be 583 values). This keeps the input manageable
+while still informing the policy about local biodiversity risk.
+
+#### Design decisions
+
+**Why shared trunk?**
+Policy and value learn from the same spatial features. Sharing the trunk
+reduces parameters and encourages representations useful for both objectives.
+Standard in CleanRL PPO. Tradeoff: gradient interference between policy and
+value losses — separate trunks are an alternative if training is unstable.
+
+**Why two trunk layers?**
+A single `Linear(13→64)` is too shallow to capture non-linear interactions
+between features (e.g. high cost + high extinction risk = high priority).
+Two layers `[64, 64]` add capacity with negligible compute cost under backprop.
+
+**Why Plackett-Luce instead of greedy top-K?**
+Greedy top-K is deterministic — no probability distribution, no log-prob,
+no policy gradient. Plackett-Luce models K sequential categorical draws
+without replacement: `P(i1,…,iK) = Π softmax(scores[remaining])[ij]`.
+Log P = sum of K log-softmax values, computable in O(K·N).
+
+**Why K=50?**
+With budget=17,000 and `cells_per_step=50`, one episode = 340 protection
+steps. K=1 would require 17,000 steps per episode (too slow for rollout
+collection). K=1000 makes the Plackett-Luce loop expensive (1000 sequential
+categoricals). K=50 balances episode length and per-step cost.
+
+**Why attention pooling for value head?**
+Mean pooling weights all 58,315 cells equally when estimating V(s). But the
+global state value is driven by a small number of high-risk, high-population
+cells — most cells are near-zero population. Attention pooling learns which
+cells to focus on:
+```
+attn = softmax(Linear(64→1)(emb))   # (58315, 1) — learned cell importance
+pooled = Σ attn_i × emb_i           # (64,)      — importance-weighted sum
+V(s) = Linear(64→1)(pooled)
+```
+This gives the value head a direct signal about which cells determine episode
+quality, rather than averaging over irrelevant cells.
+
+### Reward calibration
+PPO uses probe-based calibration identical to ES: run `n_calibration_probes=20`
+episodes with the untrained policy, compute std of each reward component,
+set multiplier = 1/std. Saved to `results/<run>/reward_calibration.json`.
+Both cost and extinction_risk are enabled (`reward_weights=[1.0, 1.0]`),
+with calibration preventing cost from dominating the signal.
+
+### Key hyperparameters
+- K=50 cells/step, n_time_steps=200, rollout_steps=128
+- γ=0.99, λ=0.95 (GAE), clip_coef=0.2, ent_coef=0.05
+- lr=3e-4 with linear annealing
 
 ### What it tells us
 - Whether PPO achieves better sample efficiency than ES (fewer epochs to same reward)

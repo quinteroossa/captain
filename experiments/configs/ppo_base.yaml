@@ -2,11 +2,11 @@
 # Run: uv run python experiments/train_ppo.py --data-dir /path/to/data --run-name ppo_baseline
 
 # Data
-subset: true
+subset: false
 n_time_steps: 200
 
 # Policy architecture
-hidden_dim: 64          # larger than ES (16) — backprop handles larger models well
+hidden_dim: [64, 64]    # two-layer trunk — single layer too shallow for 13 input features
 activation: relu
 
 # Action space
@@ -37,6 +37,11 @@ avg_carrying_capacity: 100
 dispersal_rate: 0.5
 dispersal_window: 3
 min_habitat_suitability: 0.05
+
+# Reward
+reward_weight_ext_risk: 1.0
+reward_weight_cost: 1.0
+n_calibration_probes: 20   # probe episodes for reward calibration (same as ES)
 
 # Logging
 seed: 42
