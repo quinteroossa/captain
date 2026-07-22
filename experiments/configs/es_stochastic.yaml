@@ -2,7 +2,7 @@
 # Run: uv run python experiments/train_es_stochastic.py --data-dir /path/to/data --run-name es_stochastic
 
 # Data
-subset: true
+subset: false
 n_time_steps: 50
 
 # Training

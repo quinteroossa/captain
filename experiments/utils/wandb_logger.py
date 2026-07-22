@@ -40,6 +40,12 @@ class WandbLogger:
             **ext_risk,
         })
 
+    def log_raw(self, data: dict) -> None:
+        if not self.enabled:
+            return
+        import wandb
+        wandb.log(data)
+
     def finish(self) -> None:
         if not self.enabled:
             return
