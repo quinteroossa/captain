@@ -5,18 +5,6 @@ Architecture
 Shared trunk  : same MLP as CellNN — takes (n_features, n_cells), outputs per-cell embeddings
 Policy head   : linear → per-cell scores → Plackett-Luce distribution (K cells sampled without replacement)
 Value head    : mean-pools per-cell embeddings → linear → scalar V(s)
-
-Why a shared trunk?
-    The trunk learns spatial features useful for both "which cells matter" (policy)
-    and "how good is this state overall" (value). Sharing reduces parameters and
-    encourages the representations to stay grounded.
-
-Why Plackett-Luce for K=50?
-    Top-K selection with torch.topk is deterministic — no log-prob, no gradient.
-    Plackett-Luce models the probability of an ordered K-subset as sequential
-    categorical draws without replacement:
-        P(i1, i2, ..., iK) = Π_{j=1}^{K} softmax(scores[remaining])[ij]
-    log P is the sum of per-step log-softmax values, computable in O(K·N).
 """
 
 from __future__ import annotations

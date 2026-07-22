@@ -1,26 +1,4 @@
 """CAPTAIN environment wrapper for PPO step-by-step interaction.
-
-Why this is needed
-------------------
-CAPTAIN's EpisodeRunner.run_episode() runs a full episode internally — PPO
-can't intercept individual steps. This wrapper exposes a standard
-    reset() → obs
-    step(action) → (obs, reward, done, info)
-interface so PPO's rollout loop can drive the environment one step at a time,
-storing (obs, action, log_prob, reward, value, done) in a rollout buffer.
-
-Episode structure with K=50
----------------------------
-Each call to step() corresponds to one protection+environment timestep:
-    1. Apply action (protect K=50 cells)
-    2. Advance the environment (BioEnv.step)
-    3. Compute reward
-    4. Return next observation
-
-With budget=17,000 and K=50, protection is exhausted after 340 steps.
-After that the agent still observes and the env still steps (for the remaining
-n_time_steps), but no new cells are protected — matching CAPTAIN's original
-episode logic.
 """
 
 from __future__ import annotations

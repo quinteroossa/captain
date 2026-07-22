@@ -363,6 +363,8 @@ def main():
         buffer.reset()
         episode_rewards = []
         ep_reward = 0.0
+        episode_ext_risks = []
+        episode_transitions = []
 
         model.eval()
         with torch.no_grad():
@@ -382,6 +384,10 @@ def main():
                 if done:
                     episode_rewards.append(ep_reward)
                     ep_reward = 0.0
+                    if "extinction_risk" in info:
+                        episode_ext_risks.append(info["extinction_risk"])
+                    if "transition_matrix" in info:
+                        episode_transitions.append(info["transition_matrix"])
                     obs = captain_env.reset()
                     done = False
 
@@ -477,6 +483,17 @@ def main():
         total_loss    = mean_pl_loss + cfg["vf_coef"] * mean_vf_loss - cfg["ent_coef"] * mean_entropy
         elapsed       = time.time() - t0
 
+        # Average extinction risk counts across completed episodes this rollout
+        mean_ext_risk = {}
+        if episode_ext_risks:
+            for key in episode_ext_risks[0]:
+                mean_ext_risk[key] = float(np.mean([e[key] for e in episode_ext_risks]))
+
+        # Sum transition matrices across episodes (rows=initial, cols=final)
+        mean_transition = None
+        if episode_transitions:
+            mean_transition = torch.stack(episode_transitions).float().mean(dim=0)
+
         print(
             f"Update {update:4d} | "
             f"reward: {mean_reward:7.3f} | "
@@ -485,20 +502,31 @@ def main():
             f"ent: {mean_entropy:5.3f} | "
             f"time: {elapsed:.1f}s"
         )
+        if mean_ext_risk:
+            risk_str = "  ".join(f"{k}:{v:.1f}" for k, v in mean_ext_risk.items())
+            print(f"           | ext_risk: {risk_str}")
 
         with open(log_path, "a") as f:
             f.write(f"{update}\t{mean_pl_loss:.6f}\t{mean_vf_loss:.6f}\t"
                     f"{mean_entropy:.6f}\t{total_loss:.6f}\t{mean_reward:.4f}\t{elapsed:.1f}\n")
 
         if args.wandb:
-            wb.log_raw({
+            wandb_data = {
                 "update": update,
                 "reward/mean": mean_reward,
                 "loss/policy": mean_pl_loss,
                 "loss/value": mean_vf_loss,
                 "loss/entropy": mean_entropy,
                 "lr": optimiser.param_groups[0]["lr"],
-            })
+                **{f"extinction_risk/{k}": v for k, v in mean_ext_risk.items()},
+            }
+            if mean_transition is not None:
+                n = mean_transition.shape[0]
+                class_names = ["LC", "NT", "VU", "EN", "CR"][:n]
+                for r in range(n):
+                    for c in range(n):
+                        wandb_data[f"transition/{class_names[r]}_to_{class_names[c]}"] = mean_transition[r, c].item()
+            wb.log_raw(wandb_data)
 
         if update % cfg["plot_train_freq"] == 0:
             torch.save(model.state_dict(), results_dir / f"weights_update_{update}.pt")
