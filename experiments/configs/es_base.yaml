@@ -2,7 +2,7 @@
 # Run: uv run python experiments/train_es.py --data-dir /path/to/data --config experiments/configs/es_base.yaml
 
 # Data
-subset: true                  # true = 30-species subset, false = full 583-species dataset
+subset: false                 # true = 30-species subset, false = full 583-species dataset
 n_time_steps: 50
 
 # Training
