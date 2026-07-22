@@ -15,3 +15,4 @@ cluster/config.yaml
 python_param_file.txt
 python_submit_job.sh
 wandb/
+*.log
