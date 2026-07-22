@@ -47,10 +47,7 @@ class ActorCriticCellNN(nn.Module):
         # Policy head: maps per-cell embedding to a scalar score
         self.policy_head = nn.Linear(current_dim, 1)
 
-        # Value head: attention pooling → linear → scalar V(s)
-        # Learned attention weights let the value head focus on high-priority cells
-        # (high-risk, high-population) rather than averaging over all 58K cells equally.
-        self.attn_head = nn.Linear(current_dim, 1)
+        # Value head: mean-pools per-cell embeddings → linear → scalar V(s)
         self.value_head = nn.Linear(current_dim, 1)
 
         self.input_dim = input_dim
@@ -79,18 +76,6 @@ class ActorCriticCellNN(nn.Module):
         emb = self._embed(x)
         return self.policy_head(emb).squeeze(-1)  # (n_cells,)
 
-    def _attend(self, emb: torch.Tensor) -> torch.Tensor:
-        """Attention pooling over cells.
-
-        Args:
-            emb: (n_cells, hidden_dim)
-
-        Returns:
-            pooled: (hidden_dim,)
-        """
-        attn = torch.softmax(self.attn_head(emb), dim=0)  # (n_cells, 1)
-        return (attn * emb).sum(dim=0)                     # (hidden_dim,)
-
     def value(self, x: torch.Tensor) -> torch.Tensor:
         """State value estimate V(s).
 
@@ -101,7 +86,7 @@ class ActorCriticCellNN(nn.Module):
             value: scalar tensor
         """
         emb = self._embed(x)
-        pooled = self._attend(emb)
+        pooled = emb.mean(dim=0)  # (hidden_dim,) — average over all cells
         return self.value_head(pooled).squeeze(-1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -116,7 +101,7 @@ class ActorCriticCellNN(nn.Module):
         """
         emb = self._embed(x)
         cell_scores = self.policy_head(emb).squeeze(-1)
-        state_value = self.value_head(self._attend(emb)).squeeze(-1)
+        state_value = self.value_head(emb.mean(dim=0)).squeeze(-1)
         return cell_scores, state_value
 
 

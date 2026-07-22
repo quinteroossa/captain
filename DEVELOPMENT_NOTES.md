@@ -248,18 +248,21 @@ steps. K=1 would require 17,000 steps per episode (too slow for rollout
 collection). K=1000 makes the Plackett-Luce loop expensive (1000 sequential
 categoricals). K=50 balances episode length and per-step cost.
 
-**Why attention pooling for value head?**
-Mean pooling weights all 58,315 cells equally when estimating V(s). But the
-global state value is driven by a small number of high-risk, high-population
-cells — most cells are near-zero population. Attention pooling learns which
-cells to focus on:
+**Why mean pooling for value head (baseline)?**
+Collapses the spatial dimension cheaply. Treats all 58,315 cells equally when
+estimating V(s). Sufficient for the baseline PPO run — keeping the architecture
+simple so the only variable vs ES is the optimiser.
+
+**Planned variant — attention pooling:**
+Mean pooling weights all cells equally, but most cells have near-zero
+population and don't drive episode quality. A learned attention pooling would
+let the value head focus on high-risk, high-population cells:
 ```
 attn = softmax(Linear(64→1)(emb))   # (58315, 1) — learned cell importance
 pooled = Σ attn_i × emb_i           # (64,)      — importance-weighted sum
 V(s) = Linear(64→1)(pooled)
 ```
-This gives the value head a direct signal about which cells determine episode
-quality, rather than averaging over irrelevant cells.
+To be run as a separate experiment after the baseline PPO is validated.
 
 ### Reward calibration
 PPO uses probe-based calibration identical to ES: run `n_calibration_probes=20`
