@@ -6,7 +6,7 @@ subset: false
 n_time_steps: 50
 
 # Training
-n_epochs: 500
+n_epochs: 200
 n_perturbations: 32
 n_parallel_workers: 4
 n_probes: 20

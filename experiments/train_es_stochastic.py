@@ -151,7 +151,7 @@ def create_episode_runner(data_dir: Path, cfg: dict) -> cn.EpisodeRunner:
         intensity_max = cfg["disturbance_intensity_max"]
 
     disturbance = SampledIntensityDisturbance(
-        data=mask,                          # base = 1 for all valid cells
+        data=np.zeros_like(mask),           # base = 0 (no disturbance); events raise cells to impact_factor
         risk_map=risk_map,
         mask=mask,
         binary_mask_2d=binary_mask_2d,
@@ -281,7 +281,10 @@ def main():
     print(f"  Results      : {results_dir}")
     print(f"  Subset       : {cfg['subset']}")
     print(f"  Epochs       : {cfg['n_epochs']}")
-    print(f"  Dist intensity  : {cfg['disturbance_intensity']}")
+    if cfg["disturbance_mode"] == "fixed":
+        print(f"  Dist intensity  : {cfg['disturbance_intensity']} (fixed)")
+    else:
+        print(f"  Dist intensity  : Uniform({cfg['disturbance_intensity_min']}, {cfg['disturbance_intensity_max']})")
     print(f"  Dist coherence  : {cfg['disturbance_coherence']}")
     print(f"  Dist impact     : {cfg['disturbance_impact_factor']}")
 

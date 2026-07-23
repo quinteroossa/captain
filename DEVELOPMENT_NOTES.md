@@ -57,9 +57,10 @@ setup (data, code, seeds) is correct before any modifications are made.
 
 **Script:** `experiments/train_es_stochastic.py`
 **Config:** `experiments/configs/es_stochastic.yaml`
-**Status:** Implemented, runs successfully. Known limitation: `intensity`
-and `impact_factor` are hardcoded in `StochasticSpatialData.update()` (0.3
-and 0.5), config values not yet wired through `BioEnv`.
+**Status:** Implemented. Training ran (no crash) but produced a reward curve
+that climbed smoothly for ~18 epochs then collapsed — traced to a units bug
+in the disturbance layer, fixed 2026-07-23 (see Implementation Decisions Log).
+Rerun pending to confirm the fix stabilises training.
 
 ### What it is
 Same as Scenario 0 but `StochasticSpatialData` replaces the deterministic
@@ -74,21 +75,24 @@ First integration test of the stochastic disturbance layer into training.
 Verifies the environment behaves differently from Scenario 0, and quantifies
 how much training instability the disturbance adds.
 
-**Decision rationale:** Use `data=mask` (binary 1s for valid cells) as the
-base disturbance value, following the upstream demo in `plot_input_data.py`.
-Stochastic events multiply affected cells by `impact_factor=0.5`.
-This was chosen over using the raw `area_swept_disturbance.tif` values as
-`data` because: (1) those values are very low (mean 0.021), making events
-nearly undetectable; (2) the demo uses the mask and it is the design Daniele
-demoed. Revisit once he confirms the intended semantics of `data`.
+**Decision rationale (superseded 2026-07-23):** Originally used `data=mask`
+(binary 1s for valid cells) as the base disturbance value, following the
+upstream demo in `plot_input_data.py`, with stochastic events multiplying
+affected cells by `impact_factor=0.5`. This inverted the units `BioEnv`
+expects — see "Disturbance units inverted" below. Fixed: base is now
+`np.zeros_like(mask)` (0 = no disturbance), events SET affected cells to
+`impact_factor` instead of multiplying down.
 
 ### Known issues / open questions
-- ~29% of cells fire each step regardless of location (because `risk_map`
-  mean ≈ 0.021 makes the threshold effectively `0.3 × 1.0 = 0.3` everywhere)
+- **Fixed 2026-07-23:** disturbance units were inverted relative to what
+  `update_carrying_capacity()` expects — see Implementation Decisions Log.
+  Rerun needed to confirm training stabilises.
 - Risk direction may be inverted in `apply_stochastic_events()` — awaiting
-  Daniele's confirmation
+  Daniele's confirmation (separate, still-open question — see below)
 - `area_swept_disturbance.tif` has no CRS — spatial alignment with SDMs unverified
-- `intensity` and `impact_factor` not yet configurable via BioEnv
+- `intensity` and `impact_factor` now wired through `SampledIntensityDisturbance`
+  (config-driven), but still hardcoded defaults in the base upstream
+  `StochasticSpatialData.update()` if used directly outside `experiments/`
 
 ### What it tells us
 - Whether ES can still learn under stochastic disturbance
@@ -162,31 +166,58 @@ create aleatoric uncertainty. Alternatives considered:
 
 **Script:** `experiments/train_ppo_stochastic.py` (to be created)
 **Config:** `experiments/configs/ppo_stochastic.yaml` (to be created)
-**Status:** Planned. Blocked on PPO implementation (RQ1 blocker: CellNN
-produces no log-prob; fix is K=1 cell selection per step).
+**Status:** Planned. Log-prob blocker resolved — see architecture below.
+Intermediate deterministic PPO implemented in `experiments/train_ppo.py`;
+stochastic wiring pending Scenario 2 completion.
 
 ### What it is
 Replace ES with PPO while keeping the Scenario 2 stochastic environment.
-PPO requires:
-- K=1 cell selection per step (Daniele's suggestion) → categorical distribution
-  → log-prob available → policy gradient computable
-- Value head added to CellNN (shared trunk, separate output heads for actor/critic)
-- GAE for advantage estimation across the episode
-- PPO clip update with multiple minibatch epochs per rollout
 
-### Why this scenario
-Tests RQ1 (PPO vs ES) under identical stochastic conditions. Comparing
-Scenario 3 vs Scenario 2 isolates the effect of the optimiser, keeping the
-environment identical.
+**Log-prob problem solved — Plackett-Luce (K=50):**
+The original CAPTAIN CellNN uses greedy top-K selection — deterministic, no
+probability distribution, no log-prob, no policy gradient. Solved by
+Plackett-Luce sampling: K sequential categorical draws without replacement.
+Log P = sum of K log-softmax values. K=50 balances episode length (340 steps)
+vs per-step Plackett-Luce cost (O(K·N)).
 
-**Architecture decision (to confirm with James):**
-- Shared trunk: same CellNN base → policy head + value head
-- Hidden dim: increase from 16 to 64 for PPO (backprop handles larger models
-  well; ES was kept small to reduce search space)
-- Discount factor γ: currently unused (set to 1.0) — needs decision for PPO
+### Architecture — `ActorCriticCellNN` (`experiments/ppo_actor_critic.py`)
+
+```
+Input: (13 features, 58,315 cells)
+  ↓ transpose → (58315, 13)
+
+Shared trunk (per-cell MLP):
+  Linear(13 → 64) → ReLU
+  Linear(64 → 64) → ReLU
+  → embeddings: (58315, 64)
+
+      ┌────────────────────────────┐
+  Policy head                 Value head
+  Linear(64 → 1)              mean-pool → Linear(64 → 1)
+  → scores (58315,)           → scalar V(s)
+  → Plackett-Luce(K=50)
+  → action + log P
+```
+
+**Feature breakdown (n_features = 13):** time, disturbance, disturbance_conv,
+species_richness, total_population, ext_risk_0…4 (count per IUCN class per
+cell), cost, protection_matrix, protection_matrix_conv.
+
+**Planned variant — attention pooling for value head:** mean pooling weights
+all cells equally; a learned attention head would focus on high-risk cells.
+Deferred until baseline PPO is validated.
+
+**Reward fix required for PPO** (see Implementation Decisions Log):
+ES rewards (cumulative cost, delta-based extinction risk) break PPO's per-step
+credit assignment. Replaced with `CalcRewardMarginalCost` (cost of this step's
+cells) and `CalcRewardExtRiskLevel` (dense per-step risk level signal).
+
+### Key hyperparameters
+K=50 cells/step, n_time_steps=200, rollout_steps=128, γ=0.99, λ=0.95,
+clip_coef=0.2, ent_coef=0.05, lr=3e-4 with linear annealing.
 
 ### What it tells us
-- Whether PPO achieves better sample efficiency than ES (fewer epochs to same reward)
+- Whether PPO achieves better sample efficiency than ES
 - Whether PPO produces qualitatively different protection strategies
 - Credit assignment: does PPO learn which early-episode decisions matter most?
 
@@ -242,6 +273,103 @@ penalises those tail outcomes.
 
 ## Implementation Decisions Log
 
+### Reward structure mismatch: ES vs PPO per-step credit — fixed 2026-07-23
+
+**Files:** `experiments/env_extensions.py`, `experiments/train_ppo.py`
+
+**Symptom:** PPO policy stuck at maximum entropy (`loss/entropy ≈ ln(58315) ≈ 10.97`),
+reward oscillating -100 to 0, value loss high (~140 at start). Confirmed via four
+wandb runs: `ppo_baseline_full`, `ppo_extrisk_only`, `ppo_200steps`, `ppo_baseline`.
+
+**Root cause 1 — Cumulative cost gives wrong per-step credit:**
+`CalcRewardPersistentCost` computes `dot(costs, protection_matrix)` — the total cost
+of ALL currently protected cells. This grows monotonically every episode step.
+Step 1 gets penalised ~0, step 340 gets a large penalty regardless of which cells
+were selected at that step. PPO's GAE cannot assign credit to individual decisions.
+`ppo_baseline_full` (cost enabled) oscillated -100 to 0; `ppo_extrisk_only` (cost
+disabled) confirmed cost was the source of oscillation.
+
+**Root cause 2 — Delta-based extinction risk reward is near-zero:**
+`CalcRewardExtRisk` rewards *changes* in species counts between IUCN categories.
+Species rarely shift category in a single timestep. Confirmed by `ppo_extrisk_only`:
+reward flat at ~0, entropy stuck at maximum — no gradient signal for the policy.
+
+**Why the same reward design worked for ES:**
+ES optimises total episode return (sum over all steps). Cumulative cost and
+delta-based extinction risk are both correct in expectation over a full episode.
+PPO needs meaningful per-step rewards for GAE to assign credit — the same reward
+functions don't transfer.
+
+**Fix applied:**
+- `CalcRewardMarginalCost`: cost of K cells newly protected THIS step only (delta
+  of protection matrix). Dense, non-growing, correctly credits the current action.
+- `CalcRewardExtRiskLevel`: weighted sum of current risk counts per step:
+  `(counts · [1, 0, -8, -16, -32]) / n_species`. Dense per-step signal every step.
+
+---
+
+### Disturbance units inverted — fixed 2026-07-23
+
+**Date:** 2026-07-23
+**Files:** `experiments/env_extensions.py` — `SampledIntensityDisturbance`;
+`experiments/train_es_stochastic.py` — `create_episode_runner()`
+**Upstream (not modified):** `captain/environment/bioenv.py:357-377` —
+`update_carrying_capacity()`
+
+**Symptom:** ES + stochastic disturbance training (Scenario 1) did not crash,
+but the reward curve climbed smoothly for ~18 epochs then collapsed sharply,
+with all five extinction-risk category counts (`threat_0`…`threat_4`)
+reverting or overshooting past their starting values at the same epoch
+(wandb screenshots, 2026-07-23). ES weight std (`w_std`) was also growing
+rapidly across epochs in an earlier short test run.
+
+**Root cause:** `update_carrying_capacity()` treats `self.disturbance.data`
+as a degradation-intensity layer: `eff_dist = (1 - protection) * disturbance.data`,
+then `k_dist = 1 - species_sensitivity @ eff_dist` — i.e. **higher
+`disturbance.data` means lower carrying capacity**. The deterministic layer
+(`area_swept_disturbance.tif`) matches this: mean ≈0.14 within the study
+mask, mostly small.
+
+`SampledIntensityDisturbance` was constructed with `data=mask` (all 1s) and
+applied events via `self._data[:, flat_event_mask] *= impact_factor`
+(multiplying *down* to 0.5). This convention was carried over from
+`examples/plot_input_data.py`, a standalone visual demo that was never wired
+into `BioEnv` and never exercised this code path. The effect once plugged
+into `update_carrying_capacity()`:
+
+| | `eff_dist` | `k_dist` (sensitivity≈0.88) |
+|---|---|---|
+| Deterministic baseline | ≈0.14 | ≈0.88 (12% capacity loss) |
+| Stochastic, cell with **no event** | ≈1.0 | ≈0.12 (88% capacity loss — every step, every undisturbed cell) |
+| Stochastic, cell **hit by an event** | ≈0.5 | ≈0.56 (44% loss — better off than an "undisturbed" cell) |
+
+Undisturbed cells were being crushed to a fraction of carrying capacity
+domain-wide, every timestep, while "event" cells were comparatively better
+off — inverted relative to intent, and severe enough to explain slow
+population attrition building over ~18 epochs before a threshold was crossed
+and category counts spiked simultaneously across the grid.
+
+**Fix applied:**
+```python
+# train_es_stochastic.py — base layer is now 0 (no disturbance), not 1
+disturbance = SampledIntensityDisturbance(
+    data=np.zeros_like(mask),
+    ...
+)
+
+# env_extensions.py — events SET affected cells to impact_factor, not multiply
+self._data[:, flat_event_mask] = impact_factor
+```
+Baseline is now 0 everywhere (no disturbance); an event raises a cell to
+`impact_factor` (a degradation-intensity value, 0-1), consistent with how
+the deterministic layer is scaled.
+
+**Status:** Fix applied, not yet re-run to confirm the reward curve
+stabilises. `plot_input_data.py` intentionally left unchanged (visual demo
+only, not used for training).
+
+---
+
 ### Perlin noise range mismatch in `apply_stochastic_events()` — fixed in experiments
 
 **Date:** 2026-07-14
@@ -288,6 +416,6 @@ from Daniele on intended `risk_map` semantics before touching the direction.
 | CVaR implementation: IQN vs C51 vs QR-DQN | IQN preferred, not confirmed | James |
 | CVaR confidence level α | Not decided | James / Maria |
 | Memory in disturbance (temporal autocorrelation) | Memoryless currently — assess value | James (tomorrow) |
-
+| Disturbance units (0=none vs 1=none) in `SampledIntensityDisturbance` | Fixed 2026-07-23 — rerun pending to confirm | Implement (verify) |
 
 * Ask which randomness makes sense (cost, environment)
