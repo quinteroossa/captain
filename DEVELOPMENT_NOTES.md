@@ -333,6 +333,47 @@ penalises those tail outcomes.
 
 ## Implementation Decisions Log
 
+### Reward structure mismatch: ES vs PPO per-step credit — fixed 2026-07-23
+
+**Files:** `experiments/env_extensions.py`, `experiments/train_ppo.py`
+
+**Symptom:** PPO policy stuck at maximum entropy (`loss/entropy ≈ ln(58315) ≈ 10.97`),
+reward oscillating -100 to 0, value loss high (~140 at start). Confirmed via four
+wandb runs: `ppo_baseline_full`, `ppo_extrisk_only`, `ppo_200steps`, `ppo_baseline`.
+
+**Root cause 1 — Cumulative cost gives wrong per-step credit:**
+`CalcRewardPersistentCost` computes `dot(costs, protection_matrix)` — the total cost
+of ALL currently protected cells. This grows monotonically every episode step.
+Step 1 gets penalised ~0, step 340 gets a large penalty regardless of which cells
+were selected at that step. PPO's GAE cannot assign credit to individual decisions
+because early and late steps receive structurally different penalties regardless of
+policy quality. `ppo_baseline_full` (cost enabled) oscillated -100 to 0;
+`ppo_extrisk_only` (cost disabled) confirmed cost was the source of oscillation.
+
+**Root cause 2 — Delta-based extinction risk reward is near-zero:**
+`CalcRewardExtRisk` rewards *changes* in species counts between IUCN categories.
+Species rarely shift category in a single timestep — they must lose all their
+population in a cell first, which takes many steps. Result: reward ≈ 0 nearly
+every step. Confirmed by `ppo_extrisk_only`: reward flat at ~0, entropy stuck
+at maximum. No gradient signal for the policy.
+
+**Why the same reward design worked for ES:**
+ES optimises total episode return (sum over all steps). Cumulative cost and
+delta-based extinction risk are both correct in expectation over a full episode.
+PPO needs meaningful per-step rewards for GAE to assign credit to individual
+timestep decisions — the same reward functions don't transfer.
+
+**Fix applied:**
+- `CalcRewardMarginalCost` (`experiments/env_extensions.py`): cost of K cells
+  newly protected THIS step only (delta of protection matrix). Dense, non-growing,
+  correctly credits the current action.
+- `CalcRewardExtRiskLevel` (`experiments/env_extensions.py`): weighted sum of
+  current risk category counts per step: `(counts · [1,0,-8,-16,-32]) / n_species`.
+  Dense per-step signal — agent is rewarded every step for the current state of
+  species risk, not only on rare category transitions.
+
+---
+
 ### Perlin noise range mismatch in `apply_stochastic_events()` — fixed in experiments
 
 **Date:** 2026-07-14

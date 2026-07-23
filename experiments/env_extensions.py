@@ -5,9 +5,73 @@ Kept separate from captain/ to avoid modifying Daniele's upstream code.
 
 import numpy as np
 import torch
-from pyperlin import FractalPerlin2D
 
+from captain.agents.rewards import CalcReward
 from captain.data.spatial_data import SpatialData, StochasticSpatialData
+
+
+class CalcRewardMarginalCost(CalcReward):
+    """Cost of cells protected THIS step (marginal), not cumulative.
+
+    CalcRewardPersistentCost computes dot(costs, all_protected) which grows
+    every step — giving wrong per-step credit to PPO. This class computes only
+    the cost of the K cells newly added this step.
+    """
+
+    def __init__(self, name: str = "marginal_cost", rescaler: float = 1.0):
+        super().__init__(name, rescaler, positive=False)
+        self._prev_protection = None
+
+    def calc_reward(self, env) -> float:
+        current = env.protection_matrix.data.flatten()
+        if self._prev_protection is None:
+            new_cells = current
+        else:
+            if self._prev_protection.device != current.device:
+                self._prev_protection = self._prev_protection.to(current.device)
+            new_cells = (current - self._prev_protection).clamp(min=0)
+        self._prev_protection = current.clone()
+        return torch.dot(env.costs.data.flatten(), new_cells).item() * self._rescaler
+
+    def reset(self) -> None:
+        self._prev_protection = None
+
+
+class CalcRewardExtRiskLevel(CalcReward):
+    """Dense per-step reward from weighted sum of current risk counts.
+
+    CalcRewardExtRisk fires only on category shifts (rare, ~0 per step).
+    This class rewards the current risk state every step:
+        reward = (counts · threat_weights) / n_species
+    Agent gets signal for maintaining/improving species status at each timestep.
+    """
+
+    def __init__(
+        self,
+        name: str = "ext_risk_level",
+        rescaler: float = 1.0,
+        threat_weights=None,
+        device: str = "cpu",
+    ):
+        super().__init__(name, rescaler, positive=True)
+        if threat_weights is None:
+            raise ValueError("threat_weights required, e.g. [1, 0, -8, -16, -32]")
+        self.device = torch.device(device)
+        if isinstance(threat_weights, (list, np.ndarray)):
+            threat_weights = torch.tensor(threat_weights, dtype=torch.float32)
+        self._threat_weights = threat_weights.to(self.device)
+
+    def calc_reward(self, env) -> float:
+        if self._threat_weights.device != env.device:
+            self._threat_weights = self._threat_weights.to(env.device)
+        counts = env.ext_risk.species_per_class(env.current_ext_risk)
+        weighted = (counts * self._threat_weights) / env.n_species
+        return weighted.sum().item() * self._rescaler
+
+    def to(self, device):
+        self.device = torch.device(device)
+        self._threat_weights = self._threat_weights.to(self.device)
+        return self
 
 
 class SampledIntensityDisturbance(StochasticSpatialData):
