@@ -2,9 +2,9 @@
 
 Architecture
 ------------
-Shared trunk  : same MLP as CellNN — takes (n_features, n_cells), outputs per-cell embeddings
+Shared trunk  : MLP — takes (n_features, n_cells), outputs per-cell embeddings
 Policy head   : linear → per-cell scores → Plackett-Luce distribution (K cells sampled without replacement)
-Value head    : mean-pools per-cell embeddings → linear → scalar V(s)
+Value head    : attention-pooled per-cell embeddings → linear → scalar V(s)
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ class ActorCriticCellNN(nn.Module):
 
         hidden_dims = [hidden_dim] if isinstance(hidden_dim, int) else list(hidden_dim)
 
-        # Shared trunk: maps each cell's features to a latent embedding
         trunk_layers = []
         current_dim = input_dim
         for h in hidden_dims:
@@ -44,64 +43,44 @@ class ActorCriticCellNN(nn.Module):
             current_dim = h
         self.trunk = nn.Sequential(*trunk_layers)
 
-        # Policy head: maps per-cell embedding to a scalar score
         self.policy_head = nn.Linear(current_dim, 1)
 
-        # Value head: mean-pools per-cell embeddings → linear → scalar V(s)
+        # Attention pooling: learned cell-importance weights for V(s) estimation.
+        # Mean pooling weights all 58K cells equally — high-risk cells (EN/CR) get
+        # diluted by the majority LC cells, making V(s) insensitive to risk state.
+        self.attn_head  = nn.Linear(current_dim, 1)
         self.value_head = nn.Linear(current_dim, 1)
 
-        self.input_dim = input_dim
+        self.input_dim  = input_dim
         self.hidden_dim = hidden_dim
 
     def _embed(self, x: torch.Tensor) -> torch.Tensor:
-        """Shared trunk forward pass.
-
-        Args:
-            x: (n_features, n_cells)
-
-        Returns:
-            embeddings: (n_cells, hidden_dim)
-        """
-        return self.trunk(x.t())  # (n_cells, n_features) → (n_cells, hidden_dim)
+        """Shared trunk: (n_features, n_cells) → (n_cells, hidden_dim)."""
+        return self.trunk(x.t())
 
     def scores(self, x: torch.Tensor) -> torch.Tensor:
-        """Per-cell policy scores (logits).
-
-        Args:
-            x: (n_features, n_cells)
-
-        Returns:
-            scores: (n_cells,)
-        """
-        emb = self._embed(x)
-        return self.policy_head(emb).squeeze(-1)  # (n_cells,)
+        """Per-cell policy scores (logits): (n_features, n_cells) → (n_cells,)."""
+        return self.policy_head(self._embed(x)).squeeze(-1)
 
     def value(self, x: torch.Tensor) -> torch.Tensor:
-        """State value estimate V(s).
-
-        Args:
-            x: (n_features, n_cells)
-
-        Returns:
-            value: scalar tensor
-        """
-        emb = self._embed(x)
-        pooled = emb.mean(dim=0)  # (hidden_dim,) — average over all cells
+        """State value V(s) via attention pooling: (n_features, n_cells) → scalar."""
+        emb    = self._embed(x)                              # (n_cells, hidden_dim)
+        attn   = torch.softmax(self.attn_head(emb), dim=0)  # (n_cells, 1)
+        pooled = (attn * emb).sum(dim=0)                    # (hidden_dim,)
         return self.value_head(pooled).squeeze(-1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Scores and value in one pass (shares trunk computation).
-
-        Args:
-            x: (n_features, n_cells)
+        """Scores and value in one shared-trunk pass.
 
         Returns:
             scores: (n_cells,)
             value:  scalar
         """
-        emb = self._embed(x)
+        emb        = self._embed(x)
         cell_scores = self.policy_head(emb).squeeze(-1)
-        state_value = self.value_head(emb.mean(dim=0)).squeeze(-1)
+        attn        = torch.softmax(self.attn_head(emb), dim=0)
+        pooled      = (attn * emb).sum(dim=0)
+        state_value = self.value_head(pooled).squeeze(-1)
         return cell_scores, state_value
 
 
@@ -112,11 +91,10 @@ def plackett_luce_sample(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sample K cells without replacement via Plackett-Luce and return log-prob.
 
-    At each of K steps:
-        1. Apply softmax over remaining (unselected, unconstrained) cells
-        2. Sample one cell from that distribution
-        3. Accumulate log-prob
-        4. Mask the selected cell out
+    Log-prob is divided by K so that the PPO importance ratio
+    exp(new_logp - old_logp) stays well-behaved regardless of K.
+    Without this, K=50 sequential log-probs compound to ~-548 nats,
+    making tiny policy changes produce large ratios that defeat PPO clipping.
 
     Args:
         scores:           (n_cells,) raw logits from policy head
@@ -125,30 +103,28 @@ def plackett_luce_sample(
 
     Returns:
         selected:  (k,) indices of selected cells
-        log_prob:  scalar — log P(selected | scores) under Plackett-Luce
+        log_prob:  scalar — log P(selected | scores) / K
     """
     n_cells = scores.shape[0]
-    device = scores.device
+    device  = scores.device
 
-    excl = constraint_mask.clone() if constraint_mask is not None else torch.zeros(n_cells, dtype=torch.bool, device=device)
+    excl     = constraint_mask.clone() if constraint_mask is not None else torch.zeros(n_cells, dtype=torch.bool, device=device)
     selected = []
     log_prob = torch.tensor(0.0, device=device)
 
     for _ in range(k):
         masked_scores = scores.masked_fill(excl, float("-inf"))
-
         if torch.all(torch.isinf(masked_scores)):
             break
-
-        dist = Categorical(logits=masked_scores)
-        idx = dist.sample()
-
+        dist     = Categorical(logits=masked_scores)
+        idx      = dist.sample()
         log_prob = log_prob + dist.log_prob(idx)
         selected.append(idx)
-        excl = excl.clone()
+        excl     = excl.clone()
         excl[idx] = True
 
-    return torch.stack(selected), log_prob
+    n_selected = len(selected)
+    return torch.stack(selected), log_prob / max(n_selected, 1)
 
 
 def plackett_luce_log_prob(
@@ -158,8 +134,8 @@ def plackett_luce_log_prob(
 ) -> torch.Tensor:
     """Recompute log-prob of a previously sampled action (needed for PPO update).
 
-    PPO compares the log-prob under the current policy vs the old policy.
-    This function recomputes log P(selected | current scores).
+    Returns log P / K (matching plackett_luce_sample) so the importance ratio
+    exp(new_logp - old_logp) is K-independent.
 
     Args:
         scores:          (n_cells,) current policy logits
@@ -167,21 +143,19 @@ def plackett_luce_log_prob(
         constraint_mask: (n_cells,) bool — True = invalid
 
     Returns:
-        log_prob: scalar
+        log_prob: scalar (divided by K)
     """
     n_cells = scores.shape[0]
-    device = scores.device
+    device  = scores.device
 
-    excl = constraint_mask.clone() if constraint_mask is not None else torch.zeros(n_cells, dtype=torch.bool, device=device)
+    excl     = constraint_mask.clone() if constraint_mask is not None else torch.zeros(n_cells, dtype=torch.bool, device=device)
     log_prob = torch.tensor(0.0, device=device)
 
     for idx in selected:
         masked_scores = scores.masked_fill(excl, float("-inf"))
-        dist = Categorical(logits=masked_scores)
+        dist     = Categorical(logits=masked_scores)
         log_prob = log_prob + dist.log_prob(idx)
-        # Clone before in-place write: masked_fill saves the mask for backward,
-        # so modifying it in-place after the fact triggers a version mismatch.
-        excl = excl.clone()
+        excl     = excl.clone()
         excl[idx] = True
 
-    return log_prob
+    return log_prob / max(len(selected), 1)

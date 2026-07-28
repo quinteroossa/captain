@@ -334,6 +334,18 @@ def compute_gae(
 # Main
 # =============================================================================
 
+def normalize_obs(obs: torch.Tensor) -> torch.Tensor:
+    """Normalise each feature across cells: zero mean, unit std.
+
+    obs shape: (n_features, n_cells). Normalising across cells (dim=-1) ensures
+    each feature has consistent scale before entering the shared MLP trunk.
+    Without this, features like species counts (0–583) dominate cost (0–1).
+    """
+    mean = obs.mean(dim=-1, keepdim=True)
+    std  = obs.std(dim=-1, keepdim=True).clamp(min=1e-8)
+    return (obs - mean) / std
+
+
 def main():
     args = parse_args()
     cfg  = load_config(args.config, args)
@@ -435,7 +447,7 @@ def main():
         model.eval()
         with torch.no_grad():
             while not buffer.full():
-                obs_t = obs.to(device)
+                obs_t = normalize_obs(obs.to(device))
                 scores, value = model(obs_t)
 
                 constraint = captain_env.constraint_mask
@@ -458,7 +470,7 @@ def main():
                     done = False
 
             # Bootstrap value at end of rollout for GAE
-            obs_t = obs.to(device)
+            obs_t = normalize_obs(obs.to(device))
             _, next_value = model(obs_t)
 
         # ------------------------------------------------------------------
@@ -484,7 +496,7 @@ def main():
             for start in range(0, cfg["rollout_steps"], cfg["minibatch_size"]):
                 mb_idx = indices[start : start + cfg["minibatch_size"]]
 
-                mb_obs   = buffer.obs[mb_idx].to(device)
+                mb_obs   = buffer.obs[mb_idx]  # kept on CPU; normalize_obs moves to device per-sample
                 mb_acts  = buffer.actions[mb_idx].to(device)
                 mb_logp  = buffer.logprobs[mb_idx].to(device)
                 mb_adv   = advantages[mb_idx].to(device)
@@ -497,7 +509,7 @@ def main():
                 entropies    = []
 
                 for i in range(len(mb_idx)):
-                    obs_i    = mb_obs[i]
+                    obs_i    = normalize_obs(mb_obs[i].to(device))
                     acts_i   = mb_acts[i]
                     mask_i   = mb_masks[i]
                     scores_i, val_i = model(obs_i)

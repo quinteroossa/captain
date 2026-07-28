@@ -17,8 +17,8 @@ target_protected_cells: 17000
 cells_per_step: 50      # must match k above
 
 # PPO hyperparameters
-n_updates: 500          # total policy update iterations
-rollout_steps: 128      # steps collected per rollout before updating
+n_updates: 1000         # total policy update iterations
+rollout_steps: 340      # one full episode per rollout (budget/k = 17000/50 = 340)
 n_epochs_per_update: 4  # PPO update passes over each rollout
 minibatch_size: 32      # number of steps per minibatch
 clip_coef: 0.2          # PPO clip epsilon
