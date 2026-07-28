@@ -104,9 +104,24 @@ class CaptainPPOEnv:
 
         info = {}
         if done:
+            # Per-category species counts at episode end
+            n_classes   = self.env.ext_risk._n_classes
+            final_risk  = self.env.current_ext_risk
+            counts      = self.env.ext_risk.species_per_class(final_risk)
+            class_names = ["LC", "NT", "VU", "EN", "CR"][:n_classes]
+            ext_risk_dict = {name: int(counts[i].item()) for i, name in enumerate(class_names)}
+
+            # Transition matrix: rows=initial category, cols=final category
+            init_risk  = self.env.ext_risk._init_status
+            transition = torch.zeros(n_classes, n_classes, dtype=torch.long)
+            for i in range(len(init_risk)):
+                transition[init_risk[i].item(), final_risk[i].item()] += 1
+
             info = {
-                "protected_cells": int(self.env.protected_cells_mask.sum().item()),
-                "total_reward": float(self.rewards.get_weighted_reward()),
+                "protected_cells":  int(self.env.protected_cells_mask.sum().item()),
+                "total_reward":     float(self.rewards.get_weighted_reward()),
+                "extinction_risk":  ext_risk_dict,
+                "transition_matrix": transition,
             }
 
         return obs, reward, done, info
