@@ -74,6 +74,57 @@ class CalcRewardExtRiskLevel(CalcReward):
         return self
 
 
+class CalcRewardCellValue(CalcReward):
+    """Immediate per-step credit for biodiversity value of newly protected cells.
+
+    Addresses PPO credit assignment: gives the policy direct cell-discriminating
+    signal rather than waiting for global extinction-risk category shifts.
+
+    reward = Σ_{c ∈ new} (Σ_s SDM[s,c] · priority_weight[category(s)]) / (n_species · K)
+
+    priority_weights should be NON-NEGATIVE and increase with threat level,
+    e.g. [0, 0, 8, 16, 32] mirrors the extinction-risk penalty magnitudes.
+    """
+
+    def __init__(
+        self,
+        priority_weights,
+        name: str = "cell_value",
+        rescaler: float = 1.0,
+        device: str = "cpu",
+    ):
+        super().__init__(name, rescaler, positive=True)
+        self.device = torch.device(device)
+        if isinstance(priority_weights, (list, np.ndarray)):
+            priority_weights = torch.tensor(priority_weights, dtype=torch.float32)
+        self._priority_weights = priority_weights.to(self.device)
+        self._prev_protection = None
+
+    def calc_reward(self, env) -> float:
+        current = env.protection_matrix.data.flatten()
+        if self._prev_protection is None:
+            new_mask = (current > 0).float()
+        else:
+            if self._prev_protection.device != current.device:
+                self._prev_protection = self._prev_protection.to(current.device)
+            new_mask = (current - self._prev_protection).clamp(min=0)
+        self._prev_protection = current.clone()
+
+        n_new = new_mask.sum().clamp(min=1)
+        w = self._priority_weights.to(env.device)[env.current_ext_risk]  # (n_species,)
+        # sdms.data_min_threshold: (n_species, n_cells) — zero below viability threshold
+        cell_value = (env.sdms.data_min_threshold * w.unsqueeze(1)).sum(dim=0)  # (n_cells,)
+        return (cell_value * new_mask).sum().item() / (env.n_species * n_new.item()) * self._rescaler
+
+    def reset(self) -> None:
+        self._prev_protection = None
+
+    def to(self, device):
+        self.device = torch.device(device)
+        self._priority_weights = self._priority_weights.to(self.device)
+        return self
+
+
 class SampledIntensityDisturbance(StochasticSpatialData):
     """StochasticSpatialData with intensity sampled per episode.
 

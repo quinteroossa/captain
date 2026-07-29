@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta 
 
 import captain as cn
 from captain.algorithms.budget_manager import GlobalBudgetManager
-from experiments.env_extensions import CalcRewardExtRiskLevel, CalcRewardMarginalCost
+from experiments.env_extensions import CalcRewardCellValue, CalcRewardExtRiskLevel, CalcRewardMarginalCost
 from experiments.ppo_actor_critic import ActorCriticCellNN, plackett_luce_log_prob, plackett_luce_sample
 from experiments.ppo_env_wrapper import CaptainPPOEnv
 from experiments.utils.wandb_logger import WandbLogger
@@ -170,15 +170,21 @@ def create_env(data_dir: Path, cfg: dict) -> CaptainPPOEnv:
         device=device,
     )
 
+    costs_sum = float(costs.data.sum())
+
     rewards = cn.Rewards(
         reward_obj_list=[
             CalcRewardExtRiskLevel(
                 threat_weights=np.array([1, 0, -8, -16, -32]), device=device
             ),
-            CalcRewardMarginalCost(),
+            CalcRewardCellValue(
+                priority_weights=np.array([0, 0, 8, 16, 32]), device=device
+            ),
+            CalcRewardMarginalCost(rescaler=1.0 / costs_sum),
         ],
         reward_weights=np.array([
             cfg.get("reward_weight_ext_risk", 1.0),
+            cfg.get("reward_weight_cell_value", 1.0),
             cfg.get("reward_weight_cost", 1.0),
         ]),
     )
