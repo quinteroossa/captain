@@ -75,12 +75,23 @@ class CalcRewardExtRiskLevel(CalcReward):
 
 
 class CalcRewardCellValue(CalcReward):
-    """Immediate per-step credit for biodiversity value of newly protected cells.
+    """Regret-based per-step credit for biodiversity value of newly protected cells.
 
-    Addresses PPO credit assignment: gives the policy direct cell-discriminating
-    signal rather than waiting for global extinction-risk category shifts.
+    Computes the counterfactual advantage of the actual cell selection over a
+    random selection from the available pool at the same timestep:
 
-    reward = Σ_{c ∈ new} (Σ_s SDM[s,c] · priority_weight[category(s)]) / (n_species · K)
+        reward = avg_value(selected_K) − avg_value(all_available_before_step)
+
+    This is a per-action control variate (Williams, 1992; Foerster et al., 2018
+    COMA) that removes the state-dependent component from the reward signal.
+    The critic no longer needs to explain away per-timestep expected value;
+    advantages directly measure "did I pick above-average cells?"
+
+    Without the baseline, the critic absorbs the timestep-varying expected cell
+    value, leaving near-zero advantages and no policy gradient. With the baseline:
+      - Random policy → reward ≈ 0 (by definition)
+      - Good policy   → reward > 0 (selected above-average cells)
+      - The critic learns V(s) ≈ 0, so advantages = regret directly
 
     priority_weights should be NON-NEGATIVE and increase with threat level,
     e.g. [0, 0, 8, 16, 32] mirrors the extinction-risk penalty magnitudes.
@@ -103,20 +114,31 @@ class CalcRewardCellValue(CalcReward):
     def calc_reward(self, env) -> float:
         current = env.protection_matrix.data.flatten()
         if self._prev_protection is None:
+            prev = torch.zeros_like(current)
             new_mask = (current > 0).float()
         else:
             if self._prev_protection.device != current.device:
                 self._prev_protection = self._prev_protection.to(current.device)
-            new_mask = (current - self._prev_protection).clamp(min=0)
+            prev = self._prev_protection
+            new_mask = (current - prev).clamp(min=0)
         self._prev_protection = current.clone()
 
         n_new = new_mask.sum().clamp(min=1)
         dev = env.sdms.data.device
         new_mask = new_mask.to(dev)
+        prev = prev.to(dev)
+
         w = self._priority_weights.to(dev)[env.current_ext_risk.to(dev)]  # (n_species,)
-        # sdms.data_min_threshold: (n_species, n_cells) — zero below viability threshold
         cell_value = (env.sdms.data_min_threshold * w.unsqueeze(1)).sum(dim=0)  # (n_cells,)
-        return (cell_value * new_mask).sum().item() / (env.n_species * n_new.item()) * self._rescaler
+
+        selected_avg = (cell_value * new_mask).sum() / n_new
+
+        # Baseline: mean value of cells that were available before this step's selection
+        available = (prev == 0).float().to(dev)
+        n_available = available.sum().clamp(min=1)
+        baseline = (cell_value * available).sum() / n_available
+
+        return (selected_avg - baseline).item() / env.n_species * self._rescaler
 
     def reset(self) -> None:
         self._prev_protection = None

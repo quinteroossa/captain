@@ -39,8 +39,12 @@ dispersal_window: 3
 min_habitat_suitability: 0.05
 
 # Reward
+# cell_value is now regret-based (selected_avg - available_avg), so expected
+# reward ≈ 0 for a random policy. Calibration will set a much smaller multiplier
+# than before (no 30x amplification needed). Start weight at 1.0 and let
+# calibration handle scaling.
 reward_weight_ext_risk: 1.0
-reward_weight_cell_value: 0.001   # calibration amplifies this 30x — counteract here
+reward_weight_cell_value: 1.0
 reward_weight_cost: 0.0001        # calibration amplifies this 204x — counteract here
 n_calibration_probes: 20   # probe episodes for reward calibration (same as ES)
 
