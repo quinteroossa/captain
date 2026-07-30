@@ -25,7 +25,7 @@ clip_coef: 0.2          # PPO clip epsilon
 gamma: 0.99             # discount factor
 gae_lambda: 0.95        # GAE lambda (bias-variance tradeoff)
 vf_coef: 0.5            # value loss coefficient
-ent_coef: 0.05          # entropy bonus coefficient (encourages exploration)
+ent_coef: 0.1           # higher exploration while cell-value signal establishes
 max_grad_norm: 0.5      # gradient clipping
 
 # Optimiser
@@ -40,8 +40,8 @@ min_habitat_suitability: 0.05
 
 # Reward
 reward_weight_ext_risk: 1.0
-reward_weight_cell_value: 1.0   # immediate biodiversity credit for selected cells (PPO v4)
-reward_weight_cost: 1.0
+reward_weight_cell_value: 0.001   # calibration amplifies this 30x — counteract here
+reward_weight_cost: 0.0001        # calibration amplifies this 204x — counteract here
 n_calibration_probes: 20   # probe episodes for reward calibration (same as ES)
 
 # Logging
