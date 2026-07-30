@@ -111,7 +111,9 @@ class CalcRewardCellValue(CalcReward):
         self._prev_protection = current.clone()
 
         n_new = new_mask.sum().clamp(min=1)
-        w = self._priority_weights.to(env.device)[env.current_ext_risk]  # (n_species,)
+        dev = env.sdms.data.device
+        new_mask = new_mask.to(dev)
+        w = self._priority_weights.to(dev)[env.current_ext_risk.to(dev)]  # (n_species,)
         # sdms.data_min_threshold: (n_species, n_cells) — zero below viability threshold
         cell_value = (env.sdms.data_min_threshold * w.unsqueeze(1)).sum(dim=0)  # (n_cells,)
         return (cell_value * new_mask).sum().item() / (env.n_species * n_new.item()) * self._rescaler

@@ -602,7 +602,7 @@ def main():
                 "loss/value": mean_vf_loss,
                 "loss/entropy": mean_entropy,
                 "lr": optimiser.param_groups[0]["lr"],
-                **{f"extinction_risk/{k}": v for k, v in mean_ext_risk.items()},
+                **{f"extinction_risk/threat_{i}": v for i, v in enumerate(mean_ext_risk.values())},
             }
             if mean_transition is not None:
                 n = mean_transition.shape[0]
