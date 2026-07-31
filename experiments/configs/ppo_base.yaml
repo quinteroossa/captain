@@ -24,7 +24,7 @@ minibatch_size: 32      # number of steps per minibatch
 clip_coef: 0.2          # PPO clip epsilon
 gamma: 0.99             # discount factor
 gae_lambda: 0.95        # GAE lambda (bias-variance tradeoff)
-vf_coef: 0.5            # value loss coefficient
+vf_coef: 0.25           # value loss coefficient (reduced from 0.5 — critic was dominating total loss and causing NaN spikes)
 ent_coef: 0.1           # higher exploration while cell-value signal establishes
 max_grad_norm: 0.5      # gradient clipping
 

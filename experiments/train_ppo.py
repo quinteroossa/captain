@@ -535,8 +535,16 @@ def main():
                 pg_loss2  = -mb_adv * torch.clamp(ratio, 1 - cfg["clip_coef"], 1 + cfg["clip_coef"])
                 pg_loss   = torch.max(pg_loss1, pg_loss2).mean()
 
-                # Value loss (clipped to match policy clip)
-                vf_loss = nn.functional.mse_loss(new_values, mb_ret)
+                # Value loss — clipped (CleanRL style) to prevent critic explosions.
+                # Without clipping, a single bad minibatch can spike the critic far from
+                # the old estimate, then the next rollout has corrupted baselines → NaN.
+                mb_old_vals = buffer.values[mb_idx].to(device)
+                v_clipped = mb_old_vals + torch.clamp(
+                    new_values - mb_old_vals, -cfg["clip_coef"], cfg["clip_coef"]
+                )
+                vf_loss_unclipped = (new_values - mb_ret) ** 2
+                vf_loss_clipped   = (v_clipped   - mb_ret) ** 2
+                vf_loss = 0.5 * torch.max(vf_loss_unclipped, vf_loss_clipped).mean()
 
                 # Total loss
                 loss = pg_loss + cfg["vf_coef"] * vf_loss - cfg["ent_coef"] * entropy
