@@ -54,6 +54,12 @@ class ActorCriticCellNN(nn.Module):
         self.input_dim  = input_dim
         self.hidden_dim = hidden_dim
 
+        # Larger init: breaks gradient cancellation sooner.
+        # Xavier gives σ≈0.18 for 64→1 — scores too similar across 58K cells at
+        # init, causing selected/non-selected gradient terms to cancel.
+        nn.init.normal_(self.policy_head.weight, 0, 1.0)
+        nn.init.zeros_(self.policy_head.bias)
+
     def _embed(self, x: torch.Tensor) -> torch.Tensor:
         """Shared trunk: (n_features, n_cells) → (n_cells, hidden_dim)."""
         return self.trunk(x.t())
@@ -123,8 +129,7 @@ def plackett_luce_sample(
         excl     = excl.clone()
         excl[idx] = True
 
-    n_selected = len(selected)
-    return torch.stack(selected), log_prob / max(n_selected, 1)
+    return torch.stack(selected), log_prob
 
 
 def plackett_luce_log_prob(
@@ -158,4 +163,4 @@ def plackett_luce_log_prob(
         excl     = excl.clone()
         excl[idx] = True
 
-    return log_prob / max(len(selected), 1)
+    return log_prob

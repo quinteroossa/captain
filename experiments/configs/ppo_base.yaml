@@ -38,15 +38,12 @@ dispersal_rate: 0.5
 dispersal_window: 3
 min_habitat_suitability: 0.05
 
-# Reward
-# cell_value is now regret-based (selected_avg - available_avg), so expected
-# reward ≈ 0 for a random policy. Calibration will set a much smaller multiplier
-# than before (no 30x amplification needed). Start weight at 1.0 and let
-# calibration handle scaling.
-reward_weight_ext_risk: 1.0
+# Reward (v8: single-objective, no calibration)
+# cell_value = regret-based (selected_avg - available_avg), ≈0 for random policy
+# Rollout reward normalization replaces calibration; weight here is a scale factor
+# applied on top of normalized rewards (1.0 = identity after normalization).
+# Multi-objective (cost) scoped out until single-objective converges.
 reward_weight_cell_value: 1.0
-reward_weight_cost: 0.0001        # calibration amplifies this 204x — counteract here
-n_calibration_probes: 20   # probe episodes for reward calibration (same as ES)
 
 # Logging
 seed: 42

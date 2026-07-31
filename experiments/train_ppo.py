@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta 
 
 import captain as cn
 from captain.algorithms.budget_manager import GlobalBudgetManager
-from experiments.env_extensions import CalcRewardCellValue, CalcRewardExtRiskLevel, CalcRewardMarginalCost
+from experiments.env_extensions import CalcRewardCellValue
 from experiments.ppo_actor_critic import ActorCriticCellNN, plackett_luce_log_prob, plackett_luce_sample
 from experiments.ppo_env_wrapper import CaptainPPOEnv
 from experiments.utils.wandb_logger import WandbLogger
@@ -170,23 +170,18 @@ def create_env(data_dir: Path, cfg: dict) -> CaptainPPOEnv:
         device=device,
     )
 
-    costs_sum = float(costs.data.sum())
-
+    # v8: single objective — regret cell value only.
+    # Multi-objective (cost + ecological priority) creates conflicting gradients
+    # and scale mismatch. Budget is already a hard constraint via GlobalBudgetManager;
+    # cost enters implicitly through the feature representation (feature 12 of 13).
+    # CalcRewardMarginalCost removed until single-objective PPO is confirmed working.
     rewards = cn.Rewards(
         reward_obj_list=[
-            CalcRewardExtRiskLevel(
-                threat_weights=np.array([1, 0, -8, -16, -32]), device=device
-            ),
             CalcRewardCellValue(
                 priority_weights=np.array([0, 0, 8, 16, 32]), device=device
             ),
-            CalcRewardMarginalCost(rescaler=1.0 / costs_sum),
         ],
-        reward_weights=np.array([
-            cfg.get("reward_weight_ext_risk", 1.0),
-            cfg.get("reward_weight_cell_value", 1.0),
-            cfg.get("reward_weight_cost", 1.0),
-        ]),
+        reward_weights=np.array([cfg.get("reward_weight_cell_value", 500.0)]),
     )
 
     budget_manager = GlobalBudgetManager(
@@ -409,21 +404,12 @@ def main():
     with open(log_path, "w") as f:
         f.write("update\tpolicy_loss\tvalue_loss\tentropy\ttotal_loss\treward_mean\ttime\n")
 
-    # Reward calibration
-    calibration_file = results_dir / "reward_calibration.json"
-    if not calibration_file.exists():
-        multipliers = calibrate_rewards(captain_env, model, cfg, device)
-        calib_dict = {r._name: float(m) for r, m in zip(captain_env.rewards._reward_obj_list, multipliers)}
-        with open(calibration_file, "w") as f:
-            json.dump(calib_dict, f, indent=4)
-    else:
-        print(f"\nUsing existing reward calibration: {calibration_file}")
-        with open(calibration_file) as f:
-            calib_dict = json.load(f)
-        multipliers = np.array(list(calib_dict.values()))
-
-    captain_env.rewards._reward_calibration = torch.tensor(multipliers, dtype=torch.float32)
-    wb.log_raw({"calibration/" + k: v for k, v in calib_dict.items()})
+    # No calibration: single-objective regret reward with explicit weight in config.
+    # Calibration was designed for ES (episode-level std). PPO needs per-step
+    # normalization; rollout reward normalization below handles this instead.
+    captain_env.rewards._reward_calibration = torch.ones(
+        len(captain_env.rewards._reward_obj_list), dtype=torch.float32
+    )
 
     print(f"\nTraining for {cfg['n_updates']} updates...")
     print("-" * 60)
@@ -482,6 +468,13 @@ def main():
         # ------------------------------------------------------------------
         # Phase 2: Compute advantages
         # ------------------------------------------------------------------
+        # Normalize raw rewards before GAE. Calibration was designed for ES
+        # (episode-level std). Per-step regret reward has std≈0.002; without
+        # normalization, GAE returns are tiny and critic never converges.
+        r_std = buffer.rewards.std()
+        if r_std > 1e-8:
+            buffer.rewards = (buffer.rewards - buffer.rewards.mean()) / r_std
+
         advantages, returns = compute_gae(
             buffer.rewards, buffer.values, buffer.dones,
             next_value.detach().cpu(),
