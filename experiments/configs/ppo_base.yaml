@@ -18,14 +18,14 @@ cells_per_step: 50      # must match k above
 
 # PPO hyperparameters
 n_updates: 1000         # total policy update iterations
-rollout_steps: 340      # one full episode per rollout (budget/k = 17000/50 = 340)
+rollout_steps: 680      # two episodes per rollout — reduces gradient variance, smoother extinction risk curves
 n_epochs_per_update: 4  # PPO update passes over each rollout
 minibatch_size: 32      # number of steps per minibatch
 clip_coef: 0.2          # PPO clip epsilon
 gamma: 0.99             # discount factor
 gae_lambda: 0.95        # GAE lambda (bias-variance tradeoff)
 vf_coef: 0.25           # value loss coefficient (reduced from 0.5 — critic was dominating total loss and causing NaN spikes)
-ent_coef: 0.1           # higher exploration while cell-value signal establishes
+ent_coef: 0.02          # reduced from 0.1 — entropy was stuck at 10.6/10.97 (near-uniform), causing NT/VU volatility
 max_grad_norm: 0.5      # gradient clipping
 
 # Optimiser
