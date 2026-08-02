@@ -38,12 +38,14 @@ dispersal_rate: 0.5
 dispersal_window: 3
 min_habitat_suitability: 0.05
 
-# Reward (v8: single-objective, no calibration)
-# cell_value = regret-based (selected_avg - available_avg), ≈0 for random policy
-# Rollout reward normalization replaces calibration; weight here is a scale factor
-# applied on top of normalized rewards (1.0 = identity after normalization).
-# Multi-objective (cost) scoped out until single-objective converges.
+# Reward (v11: multi-objective, linear scalarization)
+# cell_value  = regret-based (selected_avg - available_avg), priority_weights [1,0,8,16,32]
+# cost        = marginal cost of K newly protected cells this step, rescaled by 1/costs.sum()
+# Both combined before rollout normalization. reward_weight_cost is negative (penalty).
+# Tune reward_weight_cost so cost contributes ~10% of cell_value variance.
+# Start at -0.5 and adjust based on wandb reward/component plots.
 reward_weight_cell_value: 1.0
+reward_weight_cost: -0.5
 
 # Logging
 seed: 42

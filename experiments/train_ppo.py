@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta 
 
 import captain as cn
 from captain.algorithms.budget_manager import GlobalBudgetManager
-from experiments.env_extensions import CalcRewardCellValue
+from experiments.env_extensions import CalcRewardCellValue, CalcRewardMarginalCost
 from experiments.ppo_actor_critic import ActorCriticCellNN, plackett_luce_log_prob, plackett_luce_sample
 from experiments.ppo_env_wrapper import CaptainPPOEnv
 from experiments.utils.wandb_logger import WandbLogger
@@ -170,18 +170,34 @@ def create_env(data_dir: Path, cfg: dict) -> CaptainPPOEnv:
         device=device,
     )
 
-    # v8: single objective — regret cell value only.
-    # Multi-objective (cost + ecological priority) creates conflicting gradients
-    # and scale mismatch. Budget is already a hard constraint via GlobalBudgetManager;
-    # cost enters implicitly through the feature representation (feature 12 of 13).
-    # CalcRewardMarginalCost removed until single-objective PPO is confirmed working.
+    # v11: multi-objective — cell value (ecological priority) + marginal cost.
+    #
+    # Linear scalarization (Roijers et al., 2013): single policy with fixed
+    # preference weights. Valid here because we have a clear preference ordering
+    # (conservation > cost) and do not need a Pareto front.
+    #
+    # MarginalCost instead of PersistentCost (ES uses PersistentCost):
+    # sum_t MarginalCost(t) = total cost of all protected cells = PersistentCost(final),
+    # so the episode-level objective is identical. MarginalCost gives PPO clean
+    # per-step attribution — PersistentCost grows monotonically, giving wrong
+    # credit to individual timestep decisions via GAE.
+    #
+    # Rescaler = 1/costs.data.sum() matches ES normalisation (CalcRewardPersistentCost
+    # uses the same). Brings marginal cost to a 0–1 episode-fraction scale.
+    # reward_weight_cost is negative (penalty) and tuned so cost contributes
+    # ~10% of the ecological signal variance.
+    costs_rescaler = float(1.0 / costs.data.sum())
     rewards = cn.Rewards(
         reward_obj_list=[
             CalcRewardCellValue(
-                priority_weights=np.array([0, 0, 8, 16, 32]), device=device
+                priority_weights=np.array([1, 0, 8, 16, 32]), device=device
             ),
+            CalcRewardMarginalCost(rescaler=costs_rescaler),
         ],
-        reward_weights=np.array([cfg.get("reward_weight_cell_value", 500.0)]),
+        reward_weights=np.array([
+            cfg.get("reward_weight_cell_value", 1.0),
+            cfg.get("reward_weight_cost", -0.5),
+        ]),
     )
 
     budget_manager = GlobalBudgetManager(

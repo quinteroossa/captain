@@ -94,7 +94,8 @@ class CalcRewardCellValue(CalcReward):
       - The critic learns V(s) ≈ 0, so advantages = regret directly
 
     priority_weights should be NON-NEGATIVE and increase with threat level,
-    e.g. [0, 0, 8, 16, 32] mirrors the extinction-risk penalty magnitudes.
+    e.g. [1, 0, 8, 16, 32] — mirrors ES weights [1, 0, -8, -16, -32] semantically:
+    LC gets small positive value (keep safe), NT=0, VU/EN/CR get increasing priority.
     """
 
     def __init__(
