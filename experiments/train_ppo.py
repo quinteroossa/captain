@@ -190,7 +190,7 @@ def create_env(data_dir: Path, cfg: dict) -> CaptainPPOEnv:
     rewards = cn.Rewards(
         reward_obj_list=[
             CalcRewardCellValue(
-                priority_weights=np.array([1, 0, 8, 16, 32]), device=device
+                priority_weights=np.array([1, 1, 8, 16, 32]), device=device
             ),
             CalcRewardMarginalCost(rescaler=costs_rescaler),
         ],
