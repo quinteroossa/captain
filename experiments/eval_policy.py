@@ -240,7 +240,7 @@ def collect_metrics(env: cn.BioEnv) -> dict:
         cost_by_category[CLASS_NAMES[c]] = float(torch.dot(cost_flat_dev, prot_c).item())
 
     # Protection grid for spatial comparison (2D numpy array, NaN outside study area)
-    prot_grid = env.protection_matrix.reconstruct_grid[0].cpu().numpy()
+    prot_grid = np.array(env.protection_matrix.reconstruct_grid[0])
 
     return {
         "threat_counts":      {CLASS_NAMES[i]: int(counts[i].item()) for i in range(n_classes)},
