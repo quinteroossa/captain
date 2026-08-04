@@ -285,10 +285,9 @@ def run_protected_episode(
             obs_t  = normalize_obs(obs.to(device))
             scores = model.scores(obs_t)            # (n_cells,)
 
-            constraint = captain_env.constraint_mask
-            # Mask out already-protected / unavailable cells
+            constraint = captain_env.constraint_mask  # True = unavailable
             masked = scores.clone()
-            masked[~constraint] = float("-inf")
+            masked[constraint] = float("-inf")
             k      = captain_env.k
             action = torch.topk(masked, k).indices
 
