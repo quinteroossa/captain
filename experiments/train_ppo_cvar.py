@@ -94,9 +94,11 @@ def main():
         activation=cfg["activation"],
     ).to(device)
 
-    if args.resume_from is not None:
-        model.load_state_dict(torch.load(args.resume_from, map_location=device))
-        print(f"  Resumed     : {args.resume_from}  (start_update={args.start_update})")
+    resume_from  = getattr(args, 'resume_from', None)
+    start_update = getattr(args, 'start_update', 0)
+    if resume_from is not None:
+        model.load_state_dict(torch.load(resume_from, map_location=device))
+        print(f"  Resumed     : {resume_from}  (start_update={start_update})")
 
     optimiser = torch.optim.Adam(model.parameters(), lr=cfg["lr"], eps=1e-5)
 
@@ -126,8 +128,8 @@ def main():
 
         # LR annealing — continues correctly when resuming via --start-update
         if cfg.get("lr_anneal"):
-            total_updates = cfg["n_updates"] + args.start_update
-            frac = 1.0 - (args.start_update + update) / total_updates
+            total_updates = cfg["n_updates"] + start_update
+            frac = 1.0 - (start_update + update) / total_updates
             for pg in optimiser.param_groups:
                 pg["lr"] = cfg["lr"] * frac
 
@@ -345,7 +347,7 @@ def main():
             wb.log_raw(wandb_data)
 
         if update % cfg.get("plot_train_freq", 50) == 0:
-            torch.save(model.state_dict(), results_dir / f"weights_update_{args.start_update + update}.pt")
+            torch.save(model.state_dict(), results_dir / f"weights_update_{start_update + update}.pt")
 
     torch.save(model.state_dict(), results_dir / "trained_weights.pt")
     print("-" * 60)
