@@ -56,6 +56,8 @@ def parse_args():
     parser.add_argument("--n-episodes", type=int, default=5)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--use-sampling", action="store_true", default=False,
+                        help="Use Plackett-Luce sampling instead of greedy (needed for stochastic eval)")
     return parser.parse_args()
 
 
@@ -274,26 +276,35 @@ def run_protected_episode(
     captain_env: CaptainPPOEnv,
     model: ActorCriticCellNN,
     device: torch.device,
+    use_sampling: bool = False,
 ) -> dict:
-    """Greedy top-K episode. Returns collect_metrics() output."""
+    """Run one episode. Greedy by default; set use_sampling=True for stochastic eval."""
+    from experiments.ppo_actor_critic import plackett_luce_sample
+
     obs  = captain_env.reset()
     done = False
+    ep_return = 0.0
 
     model.eval()
     with torch.no_grad():
         while not done:
-            obs_t  = normalize_obs(obs.to(device))
-            scores = model.scores(obs_t)            # (n_cells,)
-
+            obs_t      = normalize_obs(obs.to(device))
+            scores, _  = model(obs_t)
             constraint = captain_env.constraint_mask  # True = unavailable
-            masked = scores.clone()
-            masked[constraint] = float("-inf")
-            k      = captain_env.k
-            action = torch.topk(masked, k).indices
 
-            obs, _reward, done, _info = captain_env.step(action)
+            if use_sampling:
+                action, _ = plackett_luce_sample(scores, captain_env.k, constraint)
+            else:
+                masked = scores.clone()
+                masked[constraint] = float("-inf")
+                action = torch.topk(masked, captain_env.k).indices
 
-    return collect_metrics(captain_env.env)
+            obs, reward, done, _info = captain_env.step(action)
+            ep_return += reward
+
+    metrics = collect_metrics(captain_env.env)
+    metrics["episode_return"] = ep_return
+    return metrics
 
 
 def run_unprotected_episode(captain_env: CaptainPPOEnv) -> dict:
@@ -365,7 +376,7 @@ def main():
     # ------------------------------------------------------------------ protected
     protected_metrics = []
     for i in range(args.n_episodes):
-        m = run_protected_episode(captain_env, model, device)
+        m = run_protected_episode(captain_env, model, device, use_sampling=args.use_sampling)
         protected_metrics.append(m)
         counts_str = "  ".join(f"{k}:{v}" for k, v in m["threat_counts"].items())
         print(f"  [protected] ep {i+1:2d}: cost={m['total_cost']:.4f}  "
@@ -418,6 +429,15 @@ def main():
     mean_tm = np.mean([m["transition_matrix"] for m in protected_metrics], axis=0)
     print_transition_matrix(mean_tm)
 
+    # Episode returns + CVaR (relevant for stochastic eval)
+    ep_returns = [m["episode_return"] for m in protected_metrics]
+    ep_returns_sorted = sorted(ep_returns)
+    n_keep = max(1, int(np.ceil(0.2 * len(ep_returns))))
+    cvar_02 = float(np.mean(ep_returns_sorted[:n_keep]))
+    print(f"\n  Episode returns: mean={np.mean(ep_returns):.3f}  std={np.std(ep_returns):.3f}"
+          f"  min={min(ep_returns):.3f}  max={max(ep_returns):.3f}")
+    print(f"  CVaR_0.2       : {cvar_02:.3f}  (mean of worst {n_keep} episodes)")
+
     # ------------------------------------------------------------------ save
     def _make_serialisable(m: dict) -> dict:
         out = {k: v for k, v in m.items() if k != "protection_grid"}
@@ -450,11 +470,20 @@ def main():
         return agg
 
     output = {
-        "run_name":  args.run_name,
-        "model":     "ppo",
-        "n_episodes": args.n_episodes,
+        "run_name":    args.run_name,
+        "model":       "ppo",
+        "n_episodes":  args.n_episodes,
+        "use_sampling": args.use_sampling,
         "protected":   _aggregate(protected_metrics),
         "unprotected": _aggregate(unprotected_metrics),
+        "returns": {
+            "mean":    float(np.mean(ep_returns)),
+            "std":     float(np.std(ep_returns)),
+            "min":     float(min(ep_returns)),
+            "max":     float(max(ep_returns)),
+            "cvar_02": cvar_02,
+            "all":     ep_returns,
+        },
     }
 
     out_dir = results_dir
