@@ -320,13 +320,13 @@ def main():
 
         with open(log_path, "a") as f:
             f.write(
-                f"{args.start_update + update}\t{mean_pl:.6f}\t{mean_vf:.6f}\t"
+                f"{start_update + update}\t{mean_pl:.6f}\t{mean_vf:.6f}\t"
                 f"{mean_ent:.6f}\t{mean_return:.4f}\t{cvar_value:.4f}\t{elapsed:.1f}\n"
             )
 
         if args.wandb:
             wandb_data = {
-                "update":           args.start_update + update,
+                "update":           start_update + update,
                 "reward/mean":      mean_return,
                 "reward/cvar":      cvar_value,
                 "loss/policy":      mean_pl,
