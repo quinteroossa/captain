@@ -22,7 +22,7 @@ cells_per_step: 50
 # CVaR episode filtering
 cvar_filter: encr           # EN+CR-only score: -(EN×16 + CR×32)
 n_episodes_per_update: 20   # collect 20 episodes per update (was 10)
-cvar_alpha: 0.2             # keep worst 20% = 4 episodes (was 2)
+cvar_alpha: 0.25            # keep worst 25% = 5 episodes
 
 # PPO hyperparameters
 n_updates: 300
