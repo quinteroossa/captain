@@ -1,0 +1,385 @@
+#!/usr/bin/env python
+"""Train IQN-PPO with stochastic disturbance (RQ3b — distributional RL).
+
+Extends CVaR-PPO v3 (train_ppo_cvar.py) by replacing the scalar value critic
+with an Implicit Quantile Network (IQN, Dabney et al. 2018). The critic now
+learns the full return distribution Z_τ(s) rather than E[Z(s)], so CVaR_α is
+computed directly from the quantile function instead of being approximated via
+episode filtering.
+
+Episode selection (EN+CR ecological filter, α=0.25) is kept from CVaR-PPO v3.
+The key change is in the value loss: quantile Huber loss replaces MSE.
+
+Dissertation narrative:
+  CVaR-PPO v3: CVaR via data selection — critic is uncertainty-blind.
+  IQN-PPO:     CVaR via representation — critic models full distribution.
+
+References:
+  Dabney et al. (2018) ICML — IQN
+  Tang et al. (2020) arXiv:1911.03618 — episodic CVaR filtering (base)
+  Wang, Kallus & Sun (2023) ICML — CVaR-RL regret bounds
+
+Usage:
+    uv run python experiments/train_ppo_iqn.py \\
+        --config experiments/configs/ppo_iqn.yaml \\
+        --data-dir ~/captain_data/captain3data \\
+        --run-name ppo_iqn_v1 \\
+        --wandb
+"""
+
+import os
+import time
+import yaml
+import logging
+import warnings
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.distributions import Categorical
+
+warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta state")
+
+from experiments.train_ppo import (
+    parse_args,
+    load_config,
+    normalize_obs,
+    compute_gae,
+)
+from experiments.train_ppo_stochastic import create_env
+from experiments.ppo_actor_critic import (
+    IQNActorCriticCellNN,
+    quantile_huber_loss,
+    plackett_luce_log_prob,
+    plackett_luce_sample,
+)
+from experiments.utils.wandb_logger import WandbLogger
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()],
+)
+
+
+def _encr_sort_key(info: dict) -> float:
+    ext = info.get("extinction_risk", {})
+    return -(ext.get("EN", 0) * 16 + ext.get("CR", 0) * 32)
+
+
+def main():
+    args = parse_args()
+    cfg  = load_config(args.config, args)
+    device = torch.device(cfg["device"])
+
+    np.random.seed(cfg["seed"])
+    torch.manual_seed(cfg["seed"])
+
+    results_dir = Path("results") / args.run_name
+    os.makedirs(results_dir, exist_ok=True)
+    with open(results_dir / "config.yaml", "w") as f:
+        yaml.dump(cfg, f)
+
+    n_episodes  = cfg["n_episodes_per_update"]
+    cvar_alpha  = cfg["cvar_alpha"]
+    n_keep      = max(1, int(np.ceil(cvar_alpha * n_episodes)))
+    n_quantiles = cfg.get("n_quantiles", 8)
+
+    print("=" * 60)
+    print(f"CAPTAIN — IQN-PPO  |  run: {args.run_name}")
+    print("=" * 60)
+    print(f"  Device      : {cfg['device']}")
+    print(f"  K           : {cfg['k']} cells/step")
+    print(f"  Updates     : {cfg['n_updates']}")
+    print(f"  Filter      : EN+CR ecological score (alpha={cvar_alpha})")
+    print(f"  Episodes/upd: {n_episodes}  →  keep worst {n_keep}")
+    print(f"  Quantiles   : {n_quantiles} per update step")
+
+    captain_env = create_env(args.data_dir, cfg)
+    n_features  = captain_env.n_features
+    n_cells     = captain_env.n_cells
+    print(f"  Grid        : {n_cells} cells, {captain_env.env.n_species} species")
+
+    model = IQNActorCriticCellNN(
+        input_dim=n_features,
+        hidden_dim=cfg["hidden_dim"],
+        activation=cfg["activation"],
+        n_cos=cfg.get("n_cos", 64),
+    ).to(device)
+
+    resume_from  = getattr(args, 'resume_from', None)
+    start_update = getattr(args, 'start_update', 0)
+    if resume_from is not None:
+        model.load_state_dict(torch.load(resume_from, map_location=device))
+        print(f"  Resumed     : {resume_from}  (start_update={start_update})")
+
+    optimiser = torch.optim.Adam(model.parameters(), lr=cfg["lr"], eps=1e-5)
+
+    captain_env.rewards._reward_calibration = torch.ones(
+        len(captain_env.rewards._reward_obj_list), dtype=torch.float32
+    )
+
+    wb = WandbLogger(
+        enabled=args.wandb,
+        project=args.wandb_project,
+        name=args.run_name,
+        config=cfg,
+        group="ppo_iqn",
+    )
+
+    log_path = results_dir / "training_log.tsv"
+    with open(log_path, "w") as f:
+        f.write("update\tpolicy_loss\tvalue_loss\tentropy\tmean_return\tcvar_iqn\ttime\n")
+
+    print(f"\nTraining for {cfg['n_updates']} updates...")
+    print("-" * 60)
+
+    t_start = time.time()
+
+    for update in range(cfg["n_updates"]):
+        t0 = time.time()
+
+        if cfg.get("lr_anneal"):
+            total_updates = cfg["n_updates"] + start_update
+            frac = 1.0 - (start_update + update) / total_updates
+            for pg in optimiser.param_groups:
+                pg["lr"] = cfg["lr"] * frac
+
+        # ------------------------------------------------------------------
+        # Phase 1: Collect N complete episodes
+        # tuple: (encr_score, ep_return, steps, info)
+        # ------------------------------------------------------------------
+        episodes = []
+
+        model.eval()
+        with torch.no_grad():
+            for _ in range(n_episodes):
+                steps     = []
+                ep_return = 0.0
+                obs       = captain_env.reset()
+                done      = False
+
+                while not done:
+                    obs_t  = normalize_obs(obs.to(device))
+                    scores, value = model(obs_t)
+                    constraint    = captain_env.constraint_mask
+                    action, logprob = plackett_luce_sample(scores, cfg["k"], constraint)
+
+                    obs_next, reward, done, info = captain_env.step(action)
+                    ep_return += reward
+
+                    steps.append((
+                        obs.cpu(),
+                        action.cpu(),
+                        logprob.cpu().detach(),
+                        reward,
+                        value.squeeze().cpu().detach(),
+                        done,
+                        constraint.cpu(),
+                    ))
+                    obs = obs_next
+
+                key = _encr_sort_key(info)
+                episodes.append((key, ep_return, steps, info))
+
+        # ------------------------------------------------------------------
+        # Phase 2: Filter — worst EN+CR episodes
+        # ------------------------------------------------------------------
+        episodes.sort(key=lambda x: x[0])
+        worst       = episodes[:n_keep]
+        all_rets    = [ep[1] for ep in episodes]
+        mean_return = float(np.mean(all_rets))
+
+        # ------------------------------------------------------------------
+        # Phase 3: Build update tensors
+        # ------------------------------------------------------------------
+        all_obs, all_actions, all_logprobs = [], [], []
+        all_values, all_masks = [], []
+        all_advantages, all_returns_gae = [], []
+        worst_ext_risks   = []
+        worst_transitions = []
+
+        for _, _, steps, info in worst:
+            rewards_ep = torch.tensor([s[3] for s in steps], dtype=torch.float32)
+            values_ep  = torch.tensor([s[4].item() for s in steps], dtype=torch.float32)
+            dones_ep   = torch.tensor([float(s[5]) for s in steps], dtype=torch.float32)
+
+            r_std = rewards_ep.std()
+            if r_std > 1e-8:
+                rewards_ep = (rewards_ep - rewards_ep.mean()) / r_std
+
+            adv_ep, ret_ep = compute_gae(
+                rewards_ep, values_ep, dones_ep,
+                torch.tensor(0.0), cfg["gamma"], cfg["gae_lambda"],
+            )
+
+            all_obs.extend([s[0] for s in steps])
+            all_actions.extend([s[1] for s in steps])
+            all_logprobs.extend([s[2] for s in steps])
+            all_values.extend([s[4] for s in steps])
+            all_masks.extend([s[6] for s in steps])
+            all_advantages.append(adv_ep)
+            all_returns_gae.append(ret_ep)
+
+            if "extinction_risk" in info:
+                worst_ext_risks.append(info["extinction_risk"])
+            if "transition_matrix" in info:
+                worst_transitions.append(info["transition_matrix"])
+
+        obs_tensor   = torch.stack(all_obs)
+        acts_tensor  = torch.stack(all_actions)
+        logp_tensor  = torch.stack(all_logprobs)
+        vals_tensor  = torch.stack(all_values)
+        masks_tensor = torch.stack(all_masks)
+        adv_tensor   = torch.cat(all_advantages)
+        ret_tensor   = torch.cat(all_returns_gae)
+
+        adv_tensor = (adv_tensor - adv_tensor.mean()) / (adv_tensor.std() + 1e-8)
+
+        T_filtered = len(obs_tensor)
+
+        # ------------------------------------------------------------------
+        # Phase 4: PPO update — policy loss unchanged, value loss = quantile Huber
+        # ------------------------------------------------------------------
+        model.train()
+        indices = np.arange(T_filtered)
+        pl_losses, vf_losses, ent_losses = [], [], []
+
+        for _ in range(cfg["n_epochs_per_update"]):
+            np.random.shuffle(indices)
+            for start in range(0, T_filtered, cfg["minibatch_size"]):
+                mb_idx = indices[start : start + cfg["minibatch_size"]]
+
+                mb_obs   = obs_tensor[mb_idx]
+                mb_acts  = acts_tensor[mb_idx].to(device)
+                mb_logp  = logp_tensor[mb_idx].to(device)
+                mb_adv   = adv_tensor[mb_idx].to(device)
+                mb_ret   = ret_tensor[mb_idx].to(device)
+                mb_masks = masks_tensor[mb_idx].to(device)
+
+                # Sample shared taus for this mini-batch
+                taus = torch.rand(n_quantiles, device=device)
+
+                new_logprobs, mean_values, entropies, q_vals_list = [], [], [], []
+                for i in range(len(mb_idx)):
+                    obs_i  = normalize_obs(mb_obs[i].to(device))
+                    acts_i = mb_acts[i]
+                    mask_i = mb_masks[i]
+
+                    scores_i, mean_val_i, q_vals_i = model.forward_train(obs_i, taus)
+
+                    lp  = plackett_luce_log_prob(scores_i, acts_i, mask_i)
+                    ent = Categorical(logits=scores_i).entropy()
+                    new_logprobs.append(lp)
+                    mean_values.append(mean_val_i)
+                    entropies.append(ent)
+                    q_vals_list.append(q_vals_i)
+
+                new_logprobs  = torch.stack(new_logprobs)
+                mean_values_t = torch.stack(mean_values)
+                entropy       = torch.stack(entropies).mean()
+                q_vals_tensor = torch.stack(q_vals_list)   # (mb, N)
+
+                # Policy loss — identical to CVaR-PPO
+                log_ratio = new_logprobs - mb_logp
+                ratio     = torch.exp(log_ratio)
+                pg_loss   = torch.max(
+                    -mb_adv * ratio,
+                    -mb_adv * torch.clamp(ratio, 1 - cfg["clip_coef"], 1 + cfg["clip_coef"]),
+                ).mean()
+
+                # Value loss — quantile Huber (replaces MSE)
+                vf_loss = torch.stack([
+                    quantile_huber_loss(q_vals_tensor[i], mb_ret[i], taus)
+                    for i in range(len(mb_idx))
+                ]).mean()
+
+                loss = pg_loss + cfg["vf_coef"] * vf_loss - cfg["ent_coef"] * entropy
+
+                optimiser.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), cfg["max_grad_norm"])
+                optimiser.step()
+
+                pl_losses.append(pg_loss.item())
+                vf_losses.append(vf_loss.item())
+                ent_losses.append(entropy.item())
+
+        # ------------------------------------------------------------------
+        # CVaR_α from IQN: sample τ ~ Uniform(0, α) at first state of best worst ep
+        # ------------------------------------------------------------------
+        model.eval()
+        with torch.no_grad():
+            taus_cvar = torch.rand(200, device=device) * cvar_alpha
+            obs0      = normalize_obs(worst[0][2][0][0].to(device))
+            emb0      = model._embed(obs0)
+            pooled0   = model._pool(emb0)
+            cvar_iqn  = model.quantile_values(pooled0, taus_cvar).mean().item()
+
+        # ------------------------------------------------------------------
+        # Logging
+        # ------------------------------------------------------------------
+        mean_pl  = float(np.mean(pl_losses))
+        mean_vf  = float(np.mean(vf_losses))
+        mean_ent = float(np.mean(ent_losses))
+        elapsed  = time.time() - t0
+
+        mean_ext_risk = {}
+        if worst_ext_risks:
+            for key in worst_ext_risks[0]:
+                mean_ext_risk[key] = float(np.mean([e[key] for e in worst_ext_risks]))
+
+        mean_transition = None
+        if worst_transitions:
+            mean_transition = torch.stack(worst_transitions).float().mean(dim=0)
+
+        print(
+            f"Update {update:4d} | "
+            f"ret_mean: {mean_return:7.3f}  cvar_iqn: {cvar_iqn:7.3f} | "
+            f"pl: {mean_pl:6.4f}  vf: {mean_vf:6.4f}  ent: {mean_ent:5.3f} | "
+            f"time: {elapsed:.1f}s"
+        )
+        if mean_ext_risk:
+            risk_str = "  ".join(f"{k}:{v:.1f}" for k, v in mean_ext_risk.items())
+            print(f"           | ext_risk (worst eps): {risk_str}")
+
+        with open(log_path, "a") as f:
+            f.write(
+                f"{start_update + update}\t{mean_pl:.6f}\t{mean_vf:.6f}\t"
+                f"{mean_ent:.6f}\t{mean_return:.4f}\t{cvar_iqn:.4f}\t{elapsed:.1f}\n"
+            )
+
+        if args.wandb:
+            wandb_data = {
+                "update":           start_update + update,
+                "reward/mean":      mean_return,
+                "iqn/cvar_alpha":   cvar_iqn,
+                "loss/policy":      mean_pl,
+                "loss/value":       mean_vf,
+                "loss/entropy":     mean_ent,
+                "lr":               optimiser.param_groups[0]["lr"],
+                **{f"extinction_risk/threat_{i}": v
+                   for i, v in enumerate(mean_ext_risk.values())},
+            }
+            if mean_transition is not None:
+                n = mean_transition.shape[0]
+                class_names = ["LC", "NT", "VU", "EN", "CR"][:n]
+                for r in range(n):
+                    for c in range(n):
+                        wandb_data[f"transition/{class_names[r]}_to_{class_names[c]}"] = (
+                            mean_transition[r, c].item()
+                        )
+            wb.log_raw(wandb_data)
+
+        if update % cfg.get("plot_train_freq", 50) == 0:
+            torch.save(model.state_dict(), results_dir / f"weights_update_{start_update + update}.pt")
+
+    torch.save(model.state_dict(), results_dir / "trained_weights.pt")
+    print("-" * 60)
+    print(f"Done in {time.time() - t_start:.1f}s")
+    wb.finish()
+
+
+if __name__ == "__main__":
+    main()
