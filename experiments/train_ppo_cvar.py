@@ -3,23 +3,30 @@
 
 Static CVaR-PPO after Tang et al. (2020) "Worst Cases Policy Gradients":
   1. Collect N complete episodes under stochastic disturbance.
-  2. Rank by total return; keep worst ceil(cvar_alpha * N) episodes.
+  2. Rank by sort criterion; keep worst ceil(cvar_alpha * N) episodes.
   3. Run a standard PPO update on only those worst-case trajectories.
 
-This optimises CVaR_alpha(G) — the expected return over the worst alpha
-fraction of disturbance draws — rather than E[G]. The episode is the
-correct unit because disturbance intensity is resampled i.i.d. at each
-reset(), making the return distribution aleatoric across episodes.
+Filter criterion controlled by `cvar_filter` in config:
+  "reward"  — sort by total episode return (v1). Simple, fast to converge.
+  "encr"    — sort by -(EN×16 + CR×32). Focuses on extinction-threatened
+              species only; removes NT domination of the full ecological score.
 
 The naive CVaR Bellman operator (applying CVaR step-by-step) is NOT used
 because CVaR is not decomposable via Bellman and is known to misconverge
 (Tamar et al. 2015).
 
+References:
+  Tang et al. (2020) arXiv:1911.03618 — episodic CVaR filtering
+  Achiam et al. (2017) ICML — CPO, decoupled constraint/reward
+  Agnihotri et al. (2024) arXiv:2406.09563 — e-COP, episodic constraints
+  Wang, Kallus & Sun (2023) ICML — CVaR-RL regret bounds
+  Ying et al. (2022) IJCAI — CPPO, CVaR constraint in PPO
+
 Usage:
     uv run python experiments/train_ppo_cvar.py \\
-        --config experiments/configs/ppo_cvar.yaml \\
-        --data-dir /path/to/captain3data \\
-        --run-name ppo_cvar_v1 \\
+        --config experiments/configs/ppo_cvar_v3.yaml \\
+        --data-dir ~/captain_data/captain3data \\
+        --run-name ppo_cvar_v3 \\
         --wandb
 """
 
@@ -58,10 +65,22 @@ logging.basicConfig(
 )
 
 
+def _sort_key(ep_return: float, info: dict, cvar_filter: str) -> float:
+    """Return the sort key for an episode (ascending = worst first)."""
+    if cvar_filter == "reward":
+        return ep_return
+    if cvar_filter == "encr":
+        ext = info.get("extinction_risk", {})
+        return -(ext.get("EN", 0) * 16 + ext.get("CR", 0) * 32)
+    raise ValueError(f"Unknown cvar_filter: {cvar_filter!r}. Choose 'reward' or 'encr'.")
+
+
 def main():
     args = parse_args()
     cfg  = load_config(args.config, args)
     device = torch.device(cfg["device"])
+
+    cvar_filter = cfg.get("cvar_filter", "reward")
 
     np.random.seed(cfg["seed"])
     torch.manual_seed(cfg["seed"])
@@ -81,6 +100,7 @@ def main():
     print(f"  Device      : {cfg['device']}")
     print(f"  K           : {cfg['k']} cells/step")
     print(f"  Updates     : {cfg['n_updates']}")
+    print(f"  Filter      : {cvar_filter}")
     print(f"  Episodes/upd: {n_episodes}  →  keep worst {n_keep} (alpha={cvar_alpha})")
 
     captain_env = create_env(args.data_dir, cfg)
@@ -126,7 +146,6 @@ def main():
     for update in range(cfg["n_updates"]):
         t0 = time.time()
 
-        # LR annealing — continues correctly when resuming via --start-update
         if cfg.get("lr_anneal"):
             total_updates = cfg["n_updates"] + start_update
             frac = 1.0 - (start_update + update) / total_updates
@@ -136,7 +155,8 @@ def main():
         # ------------------------------------------------------------------
         # Phase 1: Collect N complete episodes
         # ------------------------------------------------------------------
-        episodes = []  # list of (total_return, steps, info)
+        # tuple: (sort_key, ep_return, steps, info)
+        episodes = []
 
         model.eval()
         with torch.no_grad():
@@ -166,14 +186,15 @@ def main():
                     ))
                     obs = obs_next
 
-                episodes.append((ep_return, steps, info))
+                key = _sort_key(ep_return, info, cvar_filter)
+                episodes.append((key, ep_return, steps, info))
 
         # ------------------------------------------------------------------
-        # Phase 2: Filter to worst alpha fraction (CVaR filter)
+        # Phase 2: Filter to worst alpha fraction
         # ------------------------------------------------------------------
-        episodes.sort(key=lambda x: x[0])  # ascending: lowest return first
-        worst    = episodes[:n_keep]
-        all_rets = [ep[0] for ep in episodes]
+        episodes.sort(key=lambda x: x[0])  # ascending: worst first
+        worst       = episodes[:n_keep]
+        all_rets    = [ep[1] for ep in episodes]
         cvar_value  = float(np.mean([ep[0] for ep in worst]))
         mean_return = float(np.mean(all_rets))
 
@@ -186,17 +207,15 @@ def main():
         worst_ext_risks   = []
         worst_transitions = []
 
-        for _, steps, info in worst:
+        for _, _, steps, info in worst:
             rewards_ep = torch.tensor([s[3] for s in steps], dtype=torch.float32)
             values_ep  = torch.tensor([s[4].item() for s in steps], dtype=torch.float32)
             dones_ep   = torch.tensor([float(s[5]) for s in steps], dtype=torch.float32)
 
-            # Normalize per-episode rewards (same as standard PPO)
             r_std = rewards_ep.std()
             if r_std > 1e-8:
                 rewards_ep = (rewards_ep - rewards_ep.mean()) / r_std
 
-            # GAE with next_value=0: episodes always terminate cleanly
             adv_ep, ret_ep = compute_gae(
                 rewards_ep, values_ep, dones_ep,
                 torch.tensor(0.0), cfg["gamma"], cfg["gae_lambda"],
@@ -223,7 +242,6 @@ def main():
         adv_tensor   = torch.cat(all_advantages)
         ret_tensor   = torch.cat(all_returns_gae)
 
-        # Normalize advantages across all filtered transitions
         adv_tensor = (adv_tensor - adv_tensor.mean()) / (adv_tensor.std() + 1e-8)
 
         T_filtered = len(obs_tensor)
@@ -325,14 +343,15 @@ def main():
             )
 
         if args.wandb:
+            cvar_key = "reward/cvar" if cvar_filter == "reward" else "ecology/cvar_encr"
             wandb_data = {
-                "update":           start_update + update,
-                "reward/mean":      mean_return,
-                "reward/cvar":      cvar_value,
-                "loss/policy":      mean_pl,
-                "loss/value":       mean_vf,
-                "loss/entropy":     mean_ent,
-                "lr":               optimiser.param_groups[0]["lr"],
+                "update":      start_update + update,
+                "reward/mean": mean_return,
+                cvar_key:      cvar_value,
+                "loss/policy": mean_pl,
+                "loss/value":  mean_vf,
+                "loss/entropy": mean_ent,
+                "lr":          optimiser.param_groups[0]["lr"],
                 **{f"extinction_risk/threat_{i}": v
                    for i, v in enumerate(mean_ext_risk.values())},
             }

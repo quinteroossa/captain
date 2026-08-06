@@ -1,11 +1,12 @@
-# CVaR-PPO configuration (RQ3)
-# Run: uv run python experiments/train_ppo_cvar.py \
-#          --config experiments/configs/ppo_cvar.yaml \
-#          --data-dir /path/to/data --run-name ppo_cvar_v1 --wandb
+# CVaR-PPO v3 configuration (RQ3)
+# Fixes v2: EN+CR-only filter, 17k budget, 4x more episodes per update.
+# Run: uv run python experiments/train_ppo_cvar_v3.py \
+#          --config experiments/configs/ppo_cvar_v3.yaml \
+#          --data-dir ~/captain_data/captain3data --run-name ppo_cvar_v3 --wandb
 
 # Data
 subset: false
-n_time_steps: 200
+n_time_steps: 340      # 17000 budget / 50 k = 340 steps (matches ES budget)
 
 # Policy architecture
 hidden_dim: [64, 64]
@@ -19,9 +20,9 @@ target_protected_cells: 17000
 cells_per_step: 50
 
 # CVaR episode filtering
-cvar_filter: reward         # "reward" or "encr" (EN+CR-only ecological score)
-n_episodes_per_update: 10   # collect 10 complete episodes per update
-cvar_alpha: 0.2             # keep worst 20% = 2 episodes for the PPO update
+cvar_filter: encr           # EN+CR-only score: -(EN×16 + CR×32)
+n_episodes_per_update: 20   # collect 20 episodes per update (was 10)
+cvar_alpha: 0.2             # keep worst 20% = 4 episodes (was 2)
 
 # PPO hyperparameters
 n_updates: 300
