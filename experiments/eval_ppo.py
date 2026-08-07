@@ -494,13 +494,14 @@ def main():
         json.dump(output, f, indent=2)
     print(f"\n  Results → {json_path}")
 
-    # Protection grid from last protected episode (deterministic greedy, all eps same)
-    last_grid = protected_metrics[-1]["protection_grid"]
-    np.save(out_dir / "eval_protection_grid.npy", last_grid)
+    # Frequency grid: fraction of episodes each cell was protected (0.0–1.0).
+    # Greedy eval → binary (all eps identical); sampling eval → fractional.
+    freq_grid = np.mean([m["protection_grid"] for m in protected_metrics], axis=0)
+    np.save(out_dir / "eval_protection_grid.npy", freq_grid)
     print(f"  Grid    → {out_dir / 'eval_protection_grid.npy'}")
 
     save_spatial_plot(
-        last_grid,
+        freq_grid,
         title=f"Protection map — {args.run_name}",
         out_path=out_dir / "eval_protection_map.png",
     )
