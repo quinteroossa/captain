@@ -1,7 +1,8 @@
-# IQN-PPO configuration (RQ3b — distributional RL)
-# Run: uv run python experiments/train_ppo_iqn.py \
-#          --config experiments/configs/ppo_iqn.yaml \
-#          --data-dir ~/captain_data/captain3data --run-name ppo_iqn_v1 --wandb
+# CVaR-PPO v4 configuration (RQ3)
+# Improves v3: adds VU to filter, increases episodes for more stable tail estimate.
+# Run: uv run python experiments/train_ppo_cvar.py \
+#          --config experiments/configs/ppo_cvar_v4.yaml \
+#          --data-dir ~/captain_data/captain3data --run-name ppo_cvar_v4 --wandb
 
 # Data
 subset: false
@@ -18,14 +19,10 @@ k: 50
 target_protected_cells: 17000
 cells_per_step: 50
 
-# IQN distributional critic
-n_quantiles: 8         # τ samples per update step
-n_cos: 64              # cosine embedding dimension (IQN paper default)
-
-# CVaR episode filtering (same as CVaR v4 for fair comparison)
-cvar_filter: encrvu    # VU+EN+CR score: -(VU×8 + EN×16 + CR×32)
-cvar_alpha: 0.25       # keep worst 25% = 5 of 20 episodes
-n_episodes_per_update: 20
+# CVaR episode filtering
+cvar_filter: encrvu         # VU+EN+CR score: -(VU×8 + EN×16 + CR×32)
+n_episodes_per_update: 20   # 20 episodes — feasible on cluster, stable tail estimate
+cvar_alpha: 0.25            # keep worst 25% = 5 episodes
 
 # PPO hyperparameters
 n_updates: 300
@@ -48,11 +45,11 @@ dispersal_rate: 0.5
 dispersal_window: 3
 min_habitat_suitability: 0.05
 
-# Reward
+# Reward (identical to ppo_stochastic for fair comparison)
 reward_weight_cell_value: 1.0
 reward_weight_cost: -0.5
 
-# Stochastic disturbance (identical to CVaR v3 for fair comparison)
+# Stochastic disturbance (identical to ppo_stochastic for fair comparison)
 disturbance_intensity_min: 0.05
 disturbance_intensity_max: 0.5
 disturbance_coherence: 8

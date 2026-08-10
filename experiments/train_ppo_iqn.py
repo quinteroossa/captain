@@ -63,9 +63,13 @@ logging.basicConfig(
 )
 
 
-def _encr_sort_key(info: dict) -> float:
+def _sort_key(info: dict, cvar_filter: str) -> float:
     ext = info.get("extinction_risk", {})
-    return -(ext.get("EN", 0) * 16 + ext.get("CR", 0) * 32)
+    if cvar_filter == "encr":
+        return -(ext.get("EN", 0) * 16 + ext.get("CR", 0) * 32)
+    if cvar_filter == "encrvu":
+        return -(ext.get("VU", 0) * 8 + ext.get("EN", 0) * 16 + ext.get("CR", 0) * 32)
+    raise ValueError(f"Unknown cvar_filter: {cvar_filter!r}. Choose 'encr' or 'encrvu'.")
 
 
 def main():
@@ -81,9 +85,10 @@ def main():
     with open(results_dir / "config.yaml", "w") as f:
         yaml.dump(cfg, f)
 
-    n_episodes  = cfg["n_episodes_per_update"]
-    cvar_alpha  = cfg["cvar_alpha"]
-    n_keep      = max(1, int(np.ceil(cvar_alpha * n_episodes)))
+    n_episodes   = cfg["n_episodes_per_update"]
+    cvar_alpha   = cfg["cvar_alpha"]
+    cvar_filter  = cfg.get("cvar_filter", "encrvu")
+    n_keep       = max(1, int(np.ceil(cvar_alpha * n_episodes)))
     n_quantiles = cfg.get("n_quantiles", 8)
 
     print("=" * 60)
@@ -92,7 +97,7 @@ def main():
     print(f"  Device      : {cfg['device']}")
     print(f"  K           : {cfg['k']} cells/step")
     print(f"  Updates     : {cfg['n_updates']}")
-    print(f"  Filter      : EN+CR ecological score (alpha={cvar_alpha})")
+    print(f"  Filter      : {cvar_filter} (alpha={cvar_alpha})")
     print(f"  Episodes/upd: {n_episodes}  →  keep worst {n_keep}")
     print(f"  Quantiles   : {n_quantiles} per update step")
 
@@ -180,7 +185,7 @@ def main():
                     ))
                     obs = obs_next
 
-                key = _encr_sort_key(info)
+                key = _sort_key(info, cvar_filter)
                 episodes.append((key, ep_return, steps, info))
 
         # ------------------------------------------------------------------
