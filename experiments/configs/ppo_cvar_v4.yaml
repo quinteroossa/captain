@@ -1,0 +1,61 @@
+# CVaR-PPO v4 configuration (RQ3)
+# Improves v3: adds VU to filter, increases episodes for more stable tail estimate.
+# Run: uv run python experiments/train_ppo_cvar.py \
+#          --config experiments/configs/ppo_cvar_v4.yaml \
+#          --data-dir ~/captain_data/captain3data --run-name ppo_cvar_v4 --wandb
+
+# Data
+subset: false
+n_time_steps: 340      # 17000 budget / 50 k = 340 steps
+
+# Policy architecture
+hidden_dim: [64, 64]
+activation: relu
+
+# Action space
+k: 50
+
+# Budget
+target_protected_cells: 17000
+cells_per_step: 50
+
+# CVaR episode filtering
+cvar_filter: encrvu         # VU+EN+CR score: -(VU×8 + EN×16 + CR×32)
+n_episodes_per_update: 20   # 20 episodes — stable tail estimate, keep 5 worst
+cvar_alpha: 0.25            # keep worst 25% = 5 episodes
+
+# PPO hyperparameters
+n_updates: 200
+n_epochs_per_update: 4
+minibatch_size: 32
+clip_coef: 0.2
+gamma: 0.99
+gae_lambda: 0.95
+vf_coef: 0.25
+ent_coef: 0.02
+max_grad_norm: 0.5
+
+# Optimiser
+lr: 3.0e-4
+lr_anneal: true
+
+# Species simulation
+avg_carrying_capacity: 100
+dispersal_rate: 0.5
+dispersal_window: 3
+min_habitat_suitability: 0.05
+
+# Reward (identical to ppo_stochastic for fair comparison)
+reward_weight_cell_value: 1.0
+reward_weight_cost: -0.5
+
+# Stochastic disturbance (identical to ppo_stochastic for fair comparison)
+disturbance_intensity_min: 0.05
+disturbance_intensity_max: 0.5
+disturbance_coherence: 8
+disturbance_factors: [0.5, 0.5]
+disturbance_impact_factor: 0.5
+
+# Logging
+seed: 42
+plot_train_freq: 50

@@ -72,7 +72,10 @@ def _sort_key(ep_return: float, info: dict, cvar_filter: str) -> float:
     if cvar_filter == "encr":
         ext = info.get("extinction_risk", {})
         return -(ext.get("EN", 0) * 16 + ext.get("CR", 0) * 32)
-    raise ValueError(f"Unknown cvar_filter: {cvar_filter!r}. Choose 'reward' or 'encr'.")
+    if cvar_filter == "encrvu":
+        ext = info.get("extinction_risk", {})
+        return -(ext.get("VU", 0) * 8 + ext.get("EN", 0) * 16 + ext.get("CR", 0) * 32)
+    raise ValueError(f"Unknown cvar_filter: {cvar_filter!r}. Choose 'reward', 'encr', or 'encrvu'.")
 
 
 def main():
