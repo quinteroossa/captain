@@ -52,6 +52,8 @@ def parse_args():
     parser.add_argument("--n-unprotected", type=int, default=1)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--use-sampling", action="store_true", default=False,
+                        help="Plackett-Luce sampling instead of greedy — gives variance across episodes")
     return parser.parse_args()
 
 
@@ -139,6 +141,7 @@ def run_protected_episode(
     captain_env: CaptainPPOEnv,
     model: IQNActorCriticCellNN,
     device: torch.device,
+    use_sampling: bool = False,
 ) -> dict:
     obs  = captain_env.reset()
     done = False
@@ -147,12 +150,16 @@ def run_protected_episode(
     with torch.no_grad():
         while not done:
             obs_t  = normalize_obs(obs.to(device))
-            scores, _ = model(obs_t)          # IQN forward → (scores, mean_value)
-
+            scores, _ = model(obs_t)
             constraint = captain_env.constraint_mask
-            masked     = scores.clone()
-            masked[constraint] = float("-inf")
-            action = torch.topk(masked, captain_env.k).indices
+
+            if use_sampling:
+                from experiments.ppo_actor_critic import plackett_luce_sample
+                action, _ = plackett_luce_sample(scores, captain_env.k, constraint)
+            else:
+                masked = scores.clone()
+                masked[constraint] = float("-inf")
+                action = torch.topk(masked, captain_env.k).indices
 
             obs, _reward, done, _info = captain_env.step(action)
 
@@ -216,7 +223,7 @@ def main():
     # ------------------------------------------------------------------ protected
     protected_metrics = []
     for i in range(args.n_episodes):
-        m = run_protected_episode(captain_env, model, device)
+        m = run_protected_episode(captain_env, model, device, use_sampling=args.use_sampling)
         protected_metrics.append(m)
         counts_str = "  ".join(f"{k}:{v}" for k, v in m["threat_counts"].items())
         print(f"  [protected] ep {i+1:2d}: cost={m['total_cost']:.4f}  "
