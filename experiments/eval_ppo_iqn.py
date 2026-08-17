@@ -54,6 +54,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--use-sampling", action="store_true", default=False,
                         help="Plackett-Luce sampling instead of greedy — gives variance across episodes")
+    parser.add_argument("--seed-varied", action="store_true", default=False,
+                        help="Reseed np.random before each episode reset for different disturbance fields")
     return parser.parse_args()
 
 
@@ -223,6 +225,8 @@ def main():
     # ------------------------------------------------------------------ protected
     protected_metrics = []
     for i in range(args.n_episodes):
+        if args.seed_varied:
+            np.random.seed(args.seed + i)
         m = run_protected_episode(captain_env, model, device, use_sampling=args.use_sampling)
         protected_metrics.append(m)
         counts_str = "  ".join(f"{k}:{v}" for k, v in m["threat_counts"].items())

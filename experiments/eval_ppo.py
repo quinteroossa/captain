@@ -57,6 +57,8 @@ def parse_args():
     parser.add_argument("--n-unprotected", type=int, default=1)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed-varied", action="store_true", default=False,
+                        help="Reseed np.random before each episode reset for different disturbance fields")
     return parser.parse_args()
 
 
@@ -366,6 +368,8 @@ def main():
     # ------------------------------------------------------------------ protected
     protected_metrics = []
     for i in range(args.n_episodes):
+        if args.seed_varied:
+            np.random.seed(args.seed + i)
         m = run_protected_episode(captain_env, model, device)
         protected_metrics.append(m)
         counts_str = "  ".join(f"{k}:{v}" for k, v in m["threat_counts"].items())
@@ -466,13 +470,13 @@ def main():
         json.dump(output, f, indent=2)
     print(f"\n  Results → {json_path}")
 
-    # Protection grid from last protected episode (deterministic greedy, all eps same)
-    last_grid = protected_metrics[-1]["protection_grid"]
-    np.save(out_dir / "eval_protection_grid.npy", last_grid)
+    # Protection grid: frequency mean across episodes
+    freq_grid = np.mean([m["protection_grid"] for m in protected_metrics], axis=0)
+    np.save(out_dir / "eval_protection_grid.npy", freq_grid)
     print(f"  Grid    → {out_dir / 'eval_protection_grid.npy'}")
 
     save_spatial_plot(
-        last_grid,
+        freq_grid,
         title=f"Protection map — {args.run_name}",
         out_path=out_dir / "eval_protection_map.png",
     )
