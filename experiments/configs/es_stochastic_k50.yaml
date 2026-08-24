@@ -9,7 +9,7 @@ n_time_steps: 340
 # Training
 n_epochs: 500
 n_perturbations: 64
-n_parallel_workers: 4
+n_parallel_workers: 8
 n_probes: 20
 calibrate_rewards: true
 seed: 42
