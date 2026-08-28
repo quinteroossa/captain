@@ -1,2 +1,18 @@
 ADVANCEMENT_NOTES.md
 CLAUDE.local.md
+DEVELOPMENT_NOTES.md
+
+# Python
+__pycache__/
+*.pyc
+.DS_Store
+
+# Experiment outputs
+results/
+
+# Cluster — secrets and generated files
+cluster/config.yaml
+python_param_file.txt
+python_submit_job.sh
+wandb/
+*.log

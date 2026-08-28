@@ -1,0 +1,360 @@
+#!/usr/bin/env python
+"""Train a conservation policy with ES + stochastic disturbance (RQ2).
+
+Identical to train_es.py except the deterministic disturbance layer is
+replaced with StochasticSpatialData — spatially coherent Perlin-noise
+disturbance events applied independently each timestep.
+
+Design note (pending Daniele confirmation):
+    data=mask (binary 1s for valid cells) is used as the base disturbance
+    layer, following the demo in examples/plot_input_data.py. Stochastic
+    events multiply affected cells by impact_factor (default 0.5), creating
+    spatial variation in disturbance exposure each timestep. The risk_map
+    is the area_swept_disturbance.tif, which modulates event probability.
+
+Usage:
+    uv run python experiments/train_es_stochastic.py \\
+        --data-dir /path/to/captain3data \\
+        --run-name es_stochastic
+
+Cluster (SLURM):
+    Set --data-dir to the cluster data path.
+    All outputs are written to results/<run-name>/.
+"""
+
+import argparse
+import logging
+import os
+import time
+import warnings
+from pathlib import Path
+
+import numpy as np
+import torch
+import yaml
+from pyperlin import FractalPerlin2D
+
+warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta state")
+
+import captain as cn
+from experiments.env_extensions import SampledIntensityDisturbance
+from experiments.utils.wandb_logger import WandbLogger
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()],
+)
+
+
+# =============================================================================
+# Config
+# =============================================================================
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train CAPTAIN with ES + stochastic disturbance"
+    )
+    parser.add_argument("--data-dir", type=Path, required=True,
+                        help="Path to captain3data directory")
+    parser.add_argument("--config", type=Path,
+                        default=Path("experiments/configs/es_stochastic.yaml"),
+                        help="Path to YAML config file")
+    parser.add_argument("--run-name", type=str, default="es_stochastic",
+                        help="Name for this run — outputs go to results/<run-name>/")
+    parser.add_argument("--n-epochs", type=int, default=None,
+                        help="Override n_epochs from config")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Override device (cuda/mps/cpu)")
+    parser.add_argument("--recalibrate", action="store_true", default=False,
+                        help="Force recompute reward calibration even if file exists")
+    parser.add_argument("--disturbance-mode", type=str, default=None,
+                        choices=["fixed", "distribution"],
+                        help="Override disturbance_mode from config (fixed or distribution)")
+    parser.add_argument("--wandb", action="store_true", default=False,
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="captain-dissertation",
+                        help="W&B project name")
+    return parser.parse_args()
+
+
+def load_config(config_path: Path, args) -> dict:
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    if args.n_epochs is not None:
+        cfg["n_epochs"] = args.n_epochs
+    if args.device is not None:
+        cfg["device"] = args.device
+    else:
+        if torch.cuda.is_available():
+            cfg["device"] = "cuda"
+        elif torch.backends.mps.is_available():
+            cfg["device"] = "mps"
+        else:
+            cfg["device"] = "cpu"
+    if args.disturbance_mode is not None:
+        cfg["disturbance_mode"] = args.disturbance_mode
+    return cfg
+
+
+# =============================================================================
+# Environment setup
+# =============================================================================
+
+def create_episode_runner(data_dir: Path, cfg: dict) -> cn.EpisodeRunner:
+    device = cfg["device"]
+
+    if cfg["subset"]:
+        present_sdms_dir = data_dir / "subset/present_sdms"
+        future_sdms_dir  = data_dir / "subset/future_sdms"
+        trait_file       = data_dir / "subset/species_tbl.csv"
+    else:
+        present_sdms_dir = data_dir / "present_sdms"
+        future_sdms_dir  = data_dir / "future_sdms"
+        trait_file       = data_dir / "species_tbl.csv"
+
+    mask, _ = cn.data_loader.load_map(data_dir / "env_layers/area_mask.npy")
+
+    sdm = cn.load_spatial_data_from_dir(
+        dir=present_sdms_dir,
+        future_dir=future_sdms_dir,
+        mask=mask,
+        lower_bound=0,
+        upper_bound=1,
+        n_time_steps=cfg["n_time_steps"],
+        min_threshold=cfg["min_habitat_suitability"],
+    )
+
+    # ------------------------------------------------------------------
+    # Stochastic disturbance (replaces deterministic load_spatial_data)
+    # ------------------------------------------------------------------
+    risk_map, _ = cn.data_loader.load_map(
+        data_dir / "env_layers/area_swept_disturbance.tif"
+    )
+    coherence     = cfg["disturbance_coherence"]
+    padded_height = (risk_map.shape[0] // coherence + 1) * coherence
+    padded_width  = (risk_map.shape[1] // coherence + 1) * coherence
+
+    noise_generator = FractalPerlin2D(
+        shape=(1, padded_height, padded_width),
+        resolutions=[(coherence, coherence), (coherence, coherence)],
+        factors=cfg["disturbance_factors"],
+    )
+
+    binary_mask_2d = np.nan_to_num(mask)   # 1 = valid cell, 0 = boundary/NaN
+
+    if cfg["disturbance_mode"] == "fixed":
+        intensity_min = intensity_max = cfg["disturbance_intensity"]
+    else:
+        intensity_min = cfg["disturbance_intensity_min"]
+        intensity_max = cfg["disturbance_intensity_max"]
+
+    disturbance = SampledIntensityDisturbance(
+        data=mask,                          # base = 1 for all valid cells
+        risk_map=risk_map,
+        mask=mask,
+        binary_mask_2d=binary_mask_2d,
+        noise_generator=noise_generator,
+        delta_per_step=None,
+        lower_bound=0,
+        upper_bound=1,
+        intensity_min=intensity_min,
+        intensity_max=intensity_max,
+        impact_factor=cfg["disturbance_impact_factor"],
+        seed=cfg["seed"],
+    )
+    # ------------------------------------------------------------------
+
+    protection = cn.SpatialData(
+        data=np.zeros((1,) + mask.shape),
+        mask=mask,
+        lower_bound=0,
+        upper_bound=1,
+    )
+
+    costs = cn.load_spatial_data(
+        file=data_dir / "env_layers/cost.tif",
+        future_file=data_dir / "env_layers/future_cost.tif",
+        mask=mask,
+        lower_bound=0,
+        upper_bound=1,
+        n_time_steps=cfg["n_time_steps"],
+    )
+
+    traits = cn.data_loader.load_trait_table(
+        trait_file, sdm.names, ref_column="species", fill_gaps=True
+    )
+
+    sensitivity         = traits["sensitivity_disturbance"].to_numpy(copy=True)[:, np.newaxis]
+    growth_rates        = traits["growth_rate"].to_numpy(copy=True) + 1.0
+    carrying_capacity   = cfg["avg_carrying_capacity"] / traits["conservation_status"].to_numpy(copy=True)
+    conservation_status = traits["conservation_status"].to_numpy(copy=True) - 1
+
+    ext_risk = cn.ExtinctionRisk(init_status=conservation_status, n_classes=5, alpha=0.5)
+
+    disp_rate   = cfg["dispersal_rate"]
+    disp_window = cfg["dispersal_window"]
+    disp_file   = data_dir / f"dispersal_d{disp_rate}_t{disp_window}_NEW.npz"
+    if not disp_file.exists():
+        logging.info(f"Computing dispersal matrix: {disp_file}")
+        cn.grid_utils.save_dispersal_distances(
+            lambda_0=disp_rate,
+            coords=sdm._coords,
+            threshold=disp_window,
+            filename=str(disp_file),
+        )
+    dispersal_matrix = cn.grid_utils.load_dispersal_distances(str(disp_file))
+
+    env = cn.BioEnv(
+        sdms=sdm,
+        disturbance=disturbance,
+        costs=costs,
+        protection_matrix=protection,
+        species_k=carrying_capacity,
+        growth_rates=growth_rates,
+        sensitivity_rates=sensitivity,
+        cached_dispersal_matrix=dispersal_matrix,
+        ext_risk=ext_risk,
+        device=device,
+    )
+
+    feature_extractor = cn.FeatureExtractor(
+        env,
+        feature_set=None,
+        time_rescale=cfg["n_time_steps"] / 2,
+        device=device,
+    )
+
+    model  = cn.CellNN(input_dim=feature_extractor.n_features, hidden_dim=cfg["hidden_dim"])
+    policy = cn.PolicyNetwork(model, seed=cfg["seed"], device=device)
+
+    rewards = cn.Rewards(
+        reward_obj_list=[
+            cn.CalcRewardExtRisk(
+                threat_weights=np.array([1, 0, -8, -16, -32]), device=device
+            ),
+            cn.CalcRewardPersistentCost(rescaler=float(1.0 / costs.data.sum())),
+        ],
+        reward_weights=np.array([1.0, 1.0]),
+    )
+
+    budget_manager = cn.GlobalBudgetManager(
+        total_target=cfg["target_protected_cells"],
+        cells_per_time_step=cfg["cells_per_step"],
+        feature_updates_per_time_step=1,
+    )
+
+    return cn.EpisodeRunner(
+        env=env,
+        feature_extractor=feature_extractor,
+        policy_network=policy,
+        rewards=rewards,
+        n_steps=cfg["n_time_steps"],
+        budget_manager=budget_manager,
+    )
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+def main():
+    args = parse_args()
+    cfg  = load_config(args.config, args)
+
+    np.random.seed(cfg["seed"])
+    torch.manual_seed(cfg["seed"])
+
+    results_dir      = Path("results") / args.run_name
+    calibration_file = results_dir / "reward_calibration.json"
+    os.makedirs(results_dir, exist_ok=True)
+
+    with open(results_dir / "config.yaml", "w") as f:
+        yaml.dump(cfg, f)
+
+    print("=" * 60)
+    print(f"CAPTAIN — ES + Stochastic Disturbance  |  run: {args.run_name}")
+    print("=" * 60)
+    print(f"  Device       : {cfg['device']}")
+    print(f"  Data         : {args.data_dir}")
+    print(f"  Results      : {results_dir}")
+    print(f"  Subset       : {cfg['subset']}")
+    print(f"  Epochs       : {cfg['n_epochs']}")
+    print(f"  Dist intensity  : {cfg['disturbance_intensity']}")
+    print(f"  Dist coherence  : {cfg['disturbance_coherence']}")
+    print(f"  Dist impact     : {cfg['disturbance_impact_factor']}")
+
+    if cfg["device"] in ("cuda", "mps"):
+        episode_runners = [create_episode_runner(args.data_dir, cfg)]
+    else:
+        episode_runners = [
+            create_episode_runner(args.data_dir, cfg)
+            for _ in range(cfg["n_parallel_workers"])
+        ]
+
+    episode = episode_runners[0]
+    print(f"  Grid         : {episode.env.n_cells} cells, {episode.env.n_species} species")
+    print(f"  Features     : {episode.feature_extractor.n_features}")
+    print(f"  Parameters   : {len(episode.policy.get_flat_weights())}")
+
+    trainer = cn.EvolStrategiesTrainer(
+        episode_runners,
+        initial_coeffs=episode.policy.get_flat_weights(),
+        scheduler=cn.LearningScheduler(
+            initial_alpha=cfg["initial_alpha"],
+            initial_sigma=cfg["initial_sigma"],
+        ),
+        n_perturbations=cfg["n_perturbations"],
+        seed=cfg["seed"],
+    )
+
+    if cfg["calibrate_rewards"]:
+        if not calibration_file.exists() or args.recalibrate:
+            print(f"\nCalibrating rewards with {cfg['n_probes']} probes...")
+            multipliers = trainer.get_reward_calibrated_weights(
+                n_probes=cfg["n_probes"], verbose=True
+            )
+            trainer.save_reward_calibration(multipliers, calibration_file)
+        else:
+            print(f"\nUsing existing reward calibration: {calibration_file}")
+
+    trainer.load_reward_calibration(calibration_file, verbose=True)
+
+    logger = cn.algorithms.TrainingLogger(
+        trainer=trainer,
+        episode=episode,
+        results_dir=results_dir,
+        log_file="training_log.tsv",
+        weights_file="trained_weights.npy",
+        plot_freq=cfg["plot_train_freq"],
+    )
+
+    wb = WandbLogger(
+        enabled=args.wandb,
+        project=args.wandb_project,
+        name=args.run_name,
+        config=cfg,
+        group="es_stochastic",
+    )
+
+    print(f"\nTraining for {cfg['n_epochs']} epochs...")
+    print("-" * 60)
+    t_start = time.time()
+
+    for epoch in range(cfg["n_epochs"]):
+        t0 = time.time()
+        avg_reward, summary = trainer.train_epoch()
+        logger.log_epoch(epoch, avg_reward, summary, time.time() - t0)
+        wb.log(epoch, avg_reward, summary, trainer)
+
+    print("-" * 60)
+    print(f"Done in {time.time() - t_start:.1f}s")
+    print(f"Log     : {logger.log_path}")
+    print(f"Weights : {logger.weights_path}")
+
+    wb.finish()
+    trainer.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,9 @@
+nohup: ignoring input
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/quinteroossa/.netrc.
+wandb: Currently logged in as: quinteroossa to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.28.1
+wandb: Run data is saved locally in /home/quinteroossa/captain/wandb/run-20260721_121037-bnai2cym
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run ppo_200steps
+wandb: ⭐️ View project at https://wandb.ai/quinteroossa/captain-dissertation
+wandb: 🚀 View run at https://wandb.ai/quinteroossa/captain-dissertation/runs/bnai2cym

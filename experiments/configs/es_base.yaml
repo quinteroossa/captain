@@ -1,0 +1,34 @@
+# Evolution Strategies baseline configuration
+# Run: uv run python experiments/train_es.py --data-dir /path/to/data --config experiments/configs/es_base.yaml
+
+# Data
+subset: true                  # true = 30-species subset, false = full 583-species dataset
+n_time_steps: 50
+
+# Training
+n_epochs: 500
+n_perturbations: 32           # ES noise samples per epoch (8 is fine locally; 32 for cluster runs)
+n_parallel_workers: 4         # CPU workers (ignored on CUDA)
+n_probes: 20                  # probe episodes for reward calibration
+calibrate_rewards: true
+seed: 42
+
+# ES hyperparameters
+initial_alpha: 0.2            # learning rate
+initial_sigma: 0.3            # noise scale
+
+# Policy
+hidden_dim: 16                # CellNN hidden layer size
+
+# Budget
+target_protected_cells: 17000
+cells_per_step: 1000
+
+# Species simulation
+avg_carrying_capacity: 100
+dispersal_rate: 0.5
+dispersal_window: 3
+min_habitat_suitability: 0.05
+
+# Logging
+plot_train_freq: 10           # save protection map every N epochs

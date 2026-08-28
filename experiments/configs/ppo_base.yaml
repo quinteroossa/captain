@@ -1,0 +1,52 @@
+# PPO baseline configuration (deterministic disturbance — Scenario 3)
+# Run: uv run python experiments/train_ppo.py --data-dir /path/to/data --run-name ppo_baseline
+
+# Data
+subset: false
+n_time_steps: 200
+
+# Policy architecture
+hidden_dim: [64, 64]    # two-layer trunk — single layer too shallow for 13 input features
+activation: relu
+
+# Action space
+k: 50                   # cells protected per step; episode = budget/k = 17000/50 = 340 steps
+
+# Budget
+target_protected_cells: 17000
+cells_per_step: 50      # must match k above
+
+# PPO hyperparameters
+n_updates: 1000         # total policy update iterations
+rollout_steps: 680      # two episodes per rollout — reduces gradient variance, smoother extinction risk curves
+n_epochs_per_update: 4  # PPO update passes over each rollout
+minibatch_size: 32      # number of steps per minibatch
+clip_coef: 0.2          # PPO clip epsilon
+gamma: 0.99             # discount factor
+gae_lambda: 0.95        # GAE lambda (bias-variance tradeoff)
+vf_coef: 0.25           # value loss coefficient (reduced from 0.5 — critic was dominating total loss and causing NaN spikes)
+ent_coef: 0.02          # reduced from 0.1 — entropy was stuck at 10.6/10.97 (near-uniform), causing NT/VU volatility
+max_grad_norm: 0.5      # gradient clipping
+
+# Optimiser
+lr: 3.0e-4
+lr_anneal: true         # linearly decay lr to 0 over training
+
+# Species simulation
+avg_carrying_capacity: 100
+dispersal_rate: 0.5
+dispersal_window: 3
+min_habitat_suitability: 0.05
+
+# Reward (v11: multi-objective, linear scalarization)
+# cell_value  = regret-based (selected_avg - available_avg), priority_weights [1,0,8,16,32]
+# cost        = marginal cost of K newly protected cells this step, rescaled by 1/costs.sum()
+# Both combined before rollout normalization. reward_weight_cost is negative (penalty).
+# Tune reward_weight_cost so cost contributes ~10% of cell_value variance.
+# Start at -0.5 and adjust based on wandb reward/component plots.
+reward_weight_cell_value: 1.0
+reward_weight_cost: -0.5
+
+# Logging
+seed: 42
+plot_train_freq: 50
