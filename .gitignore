@@ -7,8 +7,10 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# Experiment outputs
-results/
+# Experiment outputs — ignore bulk results, track final outputs
+results/*
+!results/final
+!results/plots
 
 # Cluster — secrets and generated files
 cluster/config.yaml
