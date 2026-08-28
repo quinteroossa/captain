@@ -65,6 +65,8 @@ def parse_args():
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--wandb", action="store_true", default=False)
     parser.add_argument("--wandb-project", type=str, default="captain-dissertation")
+    parser.add_argument("--resume-from", type=Path, default=None, help="Path to weights file to resume from")
+    parser.add_argument("--start-update", type=int, default=0, help="Update offset for lr annealing (set to epoch of checkpoint)")
     return parser.parse_args()
 
 
@@ -397,6 +399,10 @@ def main():
         activation=cfg["activation"],
     ).to(device)
 
+    if args.resume_from is not None:
+        model.load_state_dict(torch.load(args.resume_from, map_location=device))
+        print(f"  Resumed : {args.resume_from}  (start_update={args.start_update})")
+
     optimiser = torch.optim.Adam(model.parameters(), lr=cfg["lr"], eps=1e-5)
 
     # Rollout buffer (CPU)
@@ -439,7 +445,8 @@ def main():
 
         # Learning rate annealing
         if cfg.get("lr_anneal"):
-            frac = 1.0 - update / cfg["n_updates"]
+            total_updates = cfg["n_updates"] + args.start_update
+            frac = 1.0 - (args.start_update + update) / total_updates
             for pg in optimiser.param_groups:
                 pg["lr"] = cfg["lr"] * frac
 
