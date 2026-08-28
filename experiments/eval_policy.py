@@ -4,18 +4,17 @@
 Mirrors Daniele's run_inference.py pattern:
   1. Run N episodes with the trained policy → final extinction-risk outcomes
   2. Run N episodes with NoBudgetManager → counterfactual (no protection)
-  3. Report transition matrix, threat counts, total cost for both
+  3. Report transition matrix, threat counts, cost breakdown, spatial map
 
-No reward calibration is applied during eval (matches Daniele's NoRewards usage).
-The comparison between (1) and (2) is the key dissertation metric.
-
-For deterministic runs (es_baseline), n_episodes=1 suffices — same result every
-time. For stochastic runs (es_stochastic_v3), n_episodes>1 samples the return
-distribution across different disturbance intensities.
+Enhanced for dissertation comparison:
+  - Saves protection grid as .npy for cross-model Jaccard comparison
+  - Cost breakdown by initial threat category
+  - Species recovery and decline rates per category
+  - Spatial protection map via cn.plots.plot_grid
 
 Usage:
     uv run python experiments/eval_policy.py \\
-        --run-name es_baseline \\
+        --run-name es_baseline_full \\
         --data-dir /home/quinteroossa/captain_data/captain3data
 
     uv run python experiments/eval_policy.py \\
@@ -30,6 +29,9 @@ import logging
 import warnings
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import yaml
@@ -55,21 +57,16 @@ CLASS_NAMES = ["LC", "NT", "VU", "EN", "CR"]
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a trained ES policy")
-    parser.add_argument("--run-name", type=str, required=True,
-                        help="Name of the training run (reads results/<run-name>/)")
-    parser.add_argument("--data-dir", type=Path, required=True,
-                        help="Path to captain3data directory")
-    parser.add_argument("--n-episodes", type=int, default=1,
-                        help="Episodes to run (>1 useful for stochastic runs; deterministic is the same every time)")
-    parser.add_argument("--device", type=str, default=None,
-                        help="Override device (cuda/mps/cpu)")
-    parser.add_argument("--seed", type=int, default=0,
-                        help="Random seed for evaluation")
+    parser.add_argument("--run-name", type=str, required=True)
+    parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--n-episodes", type=int, default=1)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
 
 
 # =============================================================================
-# Environment — mirrors train_es.py / train_es_stochastic.py create_episode_runner
+# Environment
 # =============================================================================
 
 def create_episode_runner(data_dir: Path, cfg: dict) -> cn.EpisodeRunner:
@@ -96,7 +93,6 @@ def create_episode_runner(data_dir: Path, cfg: dict) -> cn.EpisodeRunner:
         min_threshold=cfg["min_habitat_suitability"],
     )
 
-    # Disturbance — deterministic or stochastic depending on config
     if cfg.get("disturbance_mode") in ("fixed", "distribution"):
         risk_map, _ = cn.data_loader.load_map(
             data_dir / "env_layers/area_swept_disturbance.tif"
@@ -133,97 +129,62 @@ def create_episode_runner(data_dir: Path, cfg: dict) -> cn.EpisodeRunner:
         disturbance = cn.load_spatial_data(
             file=data_dir / "env_layers/area_swept_disturbance.tif",
             future_file=data_dir / "env_layers/future_area_swept_disturbance.tif",
-            mask=mask,
-            lower_bound=0,
-            upper_bound=1,
+            mask=mask, lower_bound=0, upper_bound=1,
             n_time_steps=cfg["n_time_steps"],
         )
 
     protection = cn.SpatialData(
-        data=np.zeros((1,) + mask.shape),
-        mask=mask,
-        lower_bound=0,
-        upper_bound=1,
+        data=np.zeros((1,) + mask.shape), mask=mask, lower_bound=0, upper_bound=1,
     )
-
     costs = cn.load_spatial_data(
         file=data_dir / "env_layers/cost.tif",
         future_file=data_dir / "env_layers/future_cost.tif",
-        mask=mask,
-        lower_bound=0,
-        upper_bound=1,
+        mask=mask, lower_bound=0, upper_bound=1,
         n_time_steps=cfg["n_time_steps"],
     )
-
-    traits = cn.data_loader.load_trait_table(
-        trait_file, sdm.names, ref_column="species", fill_gaps=True
-    )
-
+    traits              = cn.data_loader.load_trait_table(trait_file, sdm.names, ref_column="species", fill_gaps=True)
     sensitivity         = traits["sensitivity_disturbance"].to_numpy(copy=True)[:, np.newaxis]
     growth_rates        = traits["growth_rate"].to_numpy(copy=True) + 1.0
     carrying_capacity   = cfg["avg_carrying_capacity"] / traits["conservation_status"].to_numpy(copy=True)
     conservation_status = traits["conservation_status"].to_numpy(copy=True) - 1
-
-    ext_risk = cn.ExtinctionRisk(init_status=conservation_status, n_classes=5, alpha=0.5)
+    ext_risk            = cn.ExtinctionRisk(init_status=conservation_status, n_classes=5, alpha=0.5)
 
     disp_rate   = cfg["dispersal_rate"]
     disp_window = cfg["dispersal_window"]
     disp_file   = data_dir / f"dispersal_d{disp_rate}_t{disp_window}_NEW.npz"
     if not disp_file.exists():
         cn.grid_utils.save_dispersal_distances(
-            lambda_0=disp_rate,
-            coords=sdm._coords,
-            threshold=disp_window,
-            filename=str(disp_file),
+            lambda_0=disp_rate, coords=sdm._coords,
+            threshold=disp_window, filename=str(disp_file),
         )
     dispersal_matrix = cn.grid_utils.load_dispersal_distances(str(disp_file))
 
     env = cn.BioEnv(
-        sdms=sdm,
-        disturbance=disturbance,
-        costs=costs,
-        protection_matrix=protection,
-        species_k=carrying_capacity,
-        growth_rates=growth_rates,
-        sensitivity_rates=sensitivity,
-        cached_dispersal_matrix=dispersal_matrix,
-        ext_risk=ext_risk,
-        device=device,
+        sdms=sdm, disturbance=disturbance, costs=costs,
+        protection_matrix=protection, species_k=carrying_capacity,
+        growth_rates=growth_rates, sensitivity_rates=sensitivity,
+        cached_dispersal_matrix=dispersal_matrix, ext_risk=ext_risk, device=device,
     )
-
     feature_extractor = cn.FeatureExtractor(
-        env,
-        feature_set=None,
-        time_rescale=cfg["n_time_steps"] / 2,
-        device=device,
+        env, feature_set=None, time_rescale=cfg["n_time_steps"] / 2, device=device,
     )
-
     model  = cn.CellNN(input_dim=feature_extractor.n_features, hidden_dim=cfg["hidden_dim"])
     policy = cn.PolicyNetwork(model, seed=cfg.get("seed", 42), device=device)
-
     rewards = cn.Rewards(
         reward_obj_list=[
-            cn.CalcRewardExtRisk(
-                threat_weights=np.array([1, 0, -8, -16, -32]), device=device
-            ),
+            cn.CalcRewardExtRisk(threat_weights=np.array([1, 0, -8, -16, -32]), device=device),
             cn.CalcRewardPersistentCost(rescaler=float(1.0 / costs.data.sum())),
         ],
         reward_weights=np.array([1.0, 1.0]),
     )
-
     budget_manager = cn.GlobalBudgetManager(
         total_target=cfg["target_protected_cells"],
         cells_per_time_step=cfg["cells_per_step"],
         feature_updates_per_time_step=1,
     )
-
     return cn.EpisodeRunner(
-        env=env,
-        feature_extractor=feature_extractor,
-        policy_network=policy,
-        rewards=rewards,
-        n_steps=cfg["n_time_steps"],
-        budget_manager=budget_manager,
+        env=env, feature_extractor=feature_extractor, policy_network=policy,
+        rewards=rewards, n_steps=cfg["n_time_steps"], budget_manager=budget_manager,
     )
 
 
@@ -232,27 +193,84 @@ def create_episode_runner(data_dir: Path, cfg: dict) -> cn.EpisodeRunner:
 # =============================================================================
 
 def collect_metrics(env: cn.BioEnv) -> dict:
-    """Mirrors Daniele's run_inference.py: reports outcomes only, no reward calibration."""
     n_classes  = env.ext_risk._n_classes
     final_risk = env.current_ext_risk
     init_risk  = env.ext_risk._init_status
     counts     = env.ext_risk.species_per_class(final_risk)
 
+    # Transition matrix
     transition = torch.zeros(n_classes, n_classes, dtype=torch.long)
     for i in range(len(init_risk)):
         transition[init_risk[i].item(), final_risk[i].item()] += 1
 
-    prot_flat  = env.protection_matrix.data.flatten()
-    cost_flat  = env.costs.data.flatten()
-    total_cost = torch.dot(cost_flat, prot_flat).item()
+    # Cost
+    prot_flat   = env.protection_matrix.data.flatten()
+    cost_flat   = env.costs.data.flatten()
+    total_cost  = torch.dot(cost_flat, prot_flat).item()
     n_protected = int(env.protected_cells_mask.sum().item())
 
+    # Recovery / decline rates per initial category
+    # recovery = improved to safer category; decline = moved to more threatened
+    recovery_rate = {}
+    decline_rate  = {}
+    for c in range(n_classes):
+        mask_c = (init_risk == c)
+        n_c    = mask_c.sum().item()
+        if n_c == 0:
+            recovery_rate[CLASS_NAMES[c]] = None
+            decline_rate[CLASS_NAMES[c]]  = None
+            continue
+        improved = ((final_risk < init_risk) & mask_c).sum().item()
+        declined = ((final_risk > init_risk) & mask_c).sum().item()
+        recovery_rate[CLASS_NAMES[c]] = round(improved / n_c, 4)
+        decline_rate[CLASS_NAMES[c]]  = round(declined / n_c, 4)
+
+    # Cost breakdown by initial threat category:
+    # For each category c, sum costs of cells where ≥1 species with init_risk==c has habitat
+    sdm_data  = env.sdms.data_min_threshold        # (n_species, n_cells)
+    cost_flat_dev = cost_flat.to(sdm_data.device)
+    cost_by_category = {}
+    for c in range(n_classes):
+        species_in_c = (init_risk == c).to(sdm_data.device)
+        if species_in_c.sum() == 0:
+            cost_by_category[CLASS_NAMES[c]] = 0.0
+            continue
+        habitat_mask = (sdm_data[species_in_c] > 0).any(dim=0)   # cells with habitat for cat c
+        prot_c       = prot_flat.to(sdm_data.device) * habitat_mask.float()
+        cost_by_category[CLASS_NAMES[c]] = float(torch.dot(cost_flat_dev, prot_c).item())
+
+    # Protection grid for spatial comparison (2D numpy array, NaN outside study area)
+    prot_grid = np.array(env.protection_matrix.reconstruct_grid[0])
+
     return {
-        "threat_counts":     {CLASS_NAMES[i]: int(counts[i].item()) for i in range(n_classes)},
-        "transition_matrix": transition.tolist(),
-        "total_cost":        total_cost,
-        "n_protected":       n_protected,
+        "threat_counts":      {CLASS_NAMES[i]: int(counts[i].item()) for i in range(n_classes)},
+        "transition_matrix":  transition.tolist(),
+        "total_cost":         total_cost,
+        "n_protected":        n_protected,
+        "recovery_rate":      recovery_rate,
+        "decline_rate":       decline_rate,
+        "cost_by_category":   cost_by_category,
+        "protection_grid":    prot_grid,   # excluded from JSON, saved separately
     }
+
+
+def print_transition_matrix(tm: np.ndarray):
+    header = "         " + "  ".join(f"{c:>5}" for c in CLASS_NAMES)
+    print(header)
+    for i, row_name in enumerate(CLASS_NAMES):
+        row = "  ".join(f"{tm[i][j]:5.1f}" for j in range(len(CLASS_NAMES)))
+        print(f"    {row_name:2s}   [ {row} ]")
+
+
+def save_spatial_plot(grid: np.ndarray, title: str, out_path: Path):
+    fig, ax = plt.subplots(figsize=(8, 6))
+    im = ax.imshow(grid, cmap="YlOrRd", interpolation="nearest")
+    ax.set_title(title, fontsize=12)
+    ax.axis("off")
+    plt.colorbar(im, ax=ax, label="Protected (1=yes)")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
 
 
 # =============================================================================
@@ -267,9 +285,9 @@ def main():
     weights_file = results_dir / "trained_weights.npy"
 
     if not config_file.exists():
-        raise FileNotFoundError(f"No config at {config_file} — check --run-name")
+        raise FileNotFoundError(f"No config at {config_file}")
     if not weights_file.exists():
-        raise FileNotFoundError(f"No weights at {weights_file} — has training completed?")
+        raise FileNotFoundError(f"No weights at {weights_file}")
 
     with open(config_file) as f:
         cfg = yaml.safe_load(f)
@@ -292,16 +310,12 @@ def main():
     print(f"Evaluating: {args.run_name}")
     print(f"  Episodes : {args.n_episodes}")
     print(f"  Device   : {cfg['device']}")
-    print(f"  Weights  : {weights_file}")
     print("=" * 60)
 
     episode = create_episode_runner(args.data_dir, cfg)
-    print(f"  Grid     : {episode.env.n_cells} cells, {episode.env.n_species} species")
+    print(f"  Grid     : {episode.env.n_cells} cells, {episode.env.n_species} species\n")
 
-    # ------------------------------------------------------------------
-    # WITH protection — trained policy (Daniele's pattern: NoRewards,
-    # focus on ecological outcomes not calibrated reward signal)
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ WITH protection
     protected_metrics = []
     for i in range(args.n_episodes):
         episode.run_episode(params=weights)
@@ -311,11 +325,7 @@ def main():
         print(f"  [protected] ep {i+1:2d}: cost={m['total_cost']:.4f}  "
               f"protected={m['n_protected']}  [{counts_str}]")
 
-    # ------------------------------------------------------------------
-    # WITHOUT protection — counterfactual baseline (Daniele's pattern:
-    # NoBudgetManager, same env and policy but no cells can be protected)
-    # Answers: how much does protection actually change outcomes?
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ WITHOUT protection
     print()
     no_prot_runner = cn.EpisodeRunner(
         env=episode.env,
@@ -325,7 +335,6 @@ def main():
         n_steps=cfg["n_time_steps"],
         budget_manager=cn.NoBudgetManager(),
     )
-
     unprotected_metrics = []
     for i in range(args.n_episodes):
         no_prot_runner.run_episode(params=weights)
@@ -334,34 +343,64 @@ def main():
         counts_str = "  ".join(f"{k}:{v}" for k, v in m["threat_counts"].items())
         print(f"  [no prot.] ep {i+1:2d}:                             [{counts_str}]")
 
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ Summary
     print("\n" + "=" * 60)
-    print("COMPARISON: with vs without protection")
+    print("RESULTS: with vs without protection")
     print("=" * 60)
 
-    print("\n  WITH protection (trained policy):")
+    print("\n  Final species counts — WITH protection:")
     for cls in CLASS_NAMES:
         vals = [m["threat_counts"][cls] for m in protected_metrics]
         print(f"    {cls:2s} : {np.mean(vals):6.1f} ± {np.std(vals):.1f}")
-    costs_p = [m["total_cost"] for m in protected_metrics]
-    print(f"    Cost : {np.mean(costs_p):.4f} ± {np.std(costs_p):.4f}")
 
-    print("\n  WITHOUT protection (counterfactual):")
+    print("\n  Final species counts — WITHOUT protection:")
     for cls in CLASS_NAMES:
         vals = [m["threat_counts"][cls] for m in unprotected_metrics]
         print(f"    {cls:2s} : {np.mean(vals):6.1f} ± {np.std(vals):.1f}")
 
+    print("\n  Recovery rates (fraction improved to safer category) — WITH protection:")
+    for cls in CLASS_NAMES:
+        vals = [m["recovery_rate"][cls] for m in protected_metrics if m["recovery_rate"][cls] is not None]
+        if vals:
+            print(f"    {cls:2s} : {np.mean(vals):.3f}")
+
+    print("\n  Decline rates (fraction moved to more threatened) — WITH protection:")
+    for cls in CLASS_NAMES:
+        vals = [m["decline_rate"][cls] for m in protected_metrics if m["decline_rate"][cls] is not None]
+        if vals:
+            print(f"    {cls:2s} : {np.mean(vals):.3f}")
+
+    print("\n  Cost breakdown by initial threat category (budget spent on habitat for each):")
+    for cls in CLASS_NAMES:
+        vals = [m["cost_by_category"][cls] for m in protected_metrics]
+        print(f"    {cls:2s} : {np.mean(vals):.4f}")
+    costs_p = [m["total_cost"] for m in protected_metrics]
+    print(f"    Total : {np.mean(costs_p):.4f} ± {np.std(costs_p):.4f}")
+
     tm = np.mean([m["transition_matrix"] for m in protected_metrics], axis=0)
     print("\n  Transition matrix — WITH protection (rows=initial, cols=final):")
-    header = "        " + "  ".join(f"{c:>5}" for c in CLASS_NAMES)
-    print(header)
-    for i, row_name in enumerate(CLASS_NAMES):
-        row = "  ".join(f"{tm[i][j]:5.1f}" for j in range(len(CLASS_NAMES)))
-        print(f"    {row_name:2s}  [ {row} ]")
+    print_transition_matrix(tm)
 
-    # Save results
+    tm_np = np.mean([m["transition_matrix"] for m in unprotected_metrics], axis=0)
+    print("\n  Transition matrix — WITHOUT protection:")
+    print_transition_matrix(tm_np)
+
+    # ------------------------------------------------------------------ Save
+    # Spatial grids — saved separately for Jaccard comparison
+    grids_protected = np.stack([m["protection_grid"] for m in protected_metrics])
+    mean_grid = np.nanmean(grids_protected, axis=0)
+
+    np.save(results_dir / "eval_protection_grid.npy", mean_grid)
+    save_spatial_plot(
+        mean_grid,
+        title=f"Protection map — {args.run_name}",
+        out_path=results_dir / "eval_protection_map.png",
+    )
+
+    # JSON results (exclude protection_grid — too large)
+    def strip_grid(m):
+        return {k: v for k, v in m.items() if k != "protection_grid"}
+
     out_file = results_dir / "eval_results.json"
     with open(out_file, "w") as f:
         json.dump({
@@ -375,19 +414,38 @@ def main():
                 },
                 "mean_cost":              float(np.mean(costs_p)),
                 "std_cost":               float(np.std(costs_p)),
+                "mean_recovery_rate":     {
+                    cls: float(np.mean([m["recovery_rate"][cls] for m in protected_metrics
+                                        if m["recovery_rate"][cls] is not None]))
+                    for cls in CLASS_NAMES
+                    if any(m["recovery_rate"][cls] is not None for m in protected_metrics)
+                },
+                "mean_decline_rate": {
+                    cls: float(np.mean([m["decline_rate"][cls] for m in protected_metrics
+                                        if m["decline_rate"][cls] is not None]))
+                    for cls in CLASS_NAMES
+                    if any(m["decline_rate"][cls] is not None for m in protected_metrics)
+                },
+                "mean_cost_by_category": {
+                    cls: float(np.mean([m["cost_by_category"][cls] for m in protected_metrics]))
+                    for cls in CLASS_NAMES
+                },
                 "mean_transition_matrix": tm.tolist(),
-                "episodes":               protected_metrics,
+                "episodes": [strip_grid(m) for m in protected_metrics],
             },
             "unprotected": {
                 "mean_threat_counts": {
                     cls: float(np.mean([m["threat_counts"][cls] for m in unprotected_metrics]))
                     for cls in CLASS_NAMES
                 },
-                "episodes": unprotected_metrics,
+                "mean_transition_matrix": tm_np.tolist(),
+                "episodes": [strip_grid(m) for m in unprotected_metrics],
             },
         }, f, indent=2)
 
-    print(f"\n  Results → {out_file}")
+    print(f"\n  Results  → {out_file}")
+    print(f"  Grid     → {results_dir}/eval_protection_grid.npy")
+    print(f"  Map      → {results_dir}/eval_protection_map.png")
 
 
 if __name__ == "__main__":

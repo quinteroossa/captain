@@ -13,6 +13,7 @@ Cluster (SLURM):
 """
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -257,6 +258,14 @@ def main():
         seed=cfg["seed"],
     )
 
+    wb = WandbLogger(
+        enabled=args.wandb,
+        project=args.wandb_project,
+        name=args.run_name,
+        config=cfg,
+        group="es_baseline",
+    )
+
     if cfg["calibrate_rewards"]:
         if not calibration_file.exists() or args.recalibrate:
             print(f"\nCalibrating rewards with {cfg['n_probes']} probes...")
@@ -269,6 +278,15 @@ def main():
 
     trainer.load_reward_calibration(calibration_file, verbose=True)
 
+    with open(calibration_file) as f:
+        calib_dict = json.load(f)
+    print("\nReward calibration multipliers:")
+    for name, val in calib_dict.items():
+        triggered = val != 1.0
+        flag = "" if triggered else "  ← NEVER TRIGGERED (check probe episodes)"
+        print(f"  {name}: {val:.4f}{flag}")
+    wb.log_raw({"calibration/" + k: v for k, v in calib_dict.items()})
+
     logger = cn.algorithms.TrainingLogger(
         trainer=trainer,
         episode=episode,
@@ -276,14 +294,6 @@ def main():
         log_file="training_log.tsv",
         weights_file="trained_weights.npy",
         plot_freq=cfg["plot_train_freq"],
-    )
-
-    wb = WandbLogger(
-        enabled=args.wandb,
-        project=args.wandb_project,
-        name=args.run_name,
-        config=cfg,
-        group="es_baseline",
     )
 
     print(f"\nTraining for {cfg['n_epochs']} epochs...")

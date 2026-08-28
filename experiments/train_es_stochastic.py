@@ -23,6 +23,7 @@ Cluster (SLURM):
 """
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -150,7 +151,7 @@ def create_episode_runner(data_dir: Path, cfg: dict) -> cn.EpisodeRunner:
         intensity_max = cfg["disturbance_intensity_max"]
 
     disturbance = SampledIntensityDisturbance(
-        data=mask,                          # base = 1 for all valid cells
+        data=np.zeros_like(mask),           # base = 0 (no disturbance); events raise cells to impact_factor
         risk_map=risk_map,
         mask=mask,
         binary_mask_2d=binary_mask_2d,
@@ -280,7 +281,10 @@ def main():
     print(f"  Results      : {results_dir}")
     print(f"  Subset       : {cfg['subset']}")
     print(f"  Epochs       : {cfg['n_epochs']}")
-    print(f"  Dist intensity  : {cfg['disturbance_intensity']}")
+    if cfg["disturbance_mode"] == "fixed":
+        print(f"  Dist intensity  : {cfg['disturbance_intensity']} (fixed)")
+    else:
+        print(f"  Dist intensity  : Uniform({cfg['disturbance_intensity_min']}, {cfg['disturbance_intensity_max']})")
     print(f"  Dist coherence  : {cfg['disturbance_coherence']}")
     print(f"  Dist impact     : {cfg['disturbance_impact_factor']}")
 
@@ -308,6 +312,14 @@ def main():
         seed=cfg["seed"],
     )
 
+    wb = WandbLogger(
+        enabled=args.wandb,
+        project=args.wandb_project,
+        name=args.run_name,
+        config=cfg,
+        group="es_stochastic",
+    )
+
     if cfg["calibrate_rewards"]:
         if not calibration_file.exists() or args.recalibrate:
             print(f"\nCalibrating rewards with {cfg['n_probes']} probes...")
@@ -320,6 +332,15 @@ def main():
 
     trainer.load_reward_calibration(calibration_file, verbose=True)
 
+    with open(calibration_file) as f:
+        calib_dict = json.load(f)
+    print("\nReward calibration multipliers:")
+    for name, val in calib_dict.items():
+        triggered = val != 1.0
+        flag = "" if triggered else "  ← NEVER TRIGGERED (check probe episodes)"
+        print(f"  {name}: {val:.4f}{flag}")
+    wb.log_raw({"calibration/" + k: v for k, v in calib_dict.items()})
+
     logger = cn.algorithms.TrainingLogger(
         trainer=trainer,
         episode=episode,
@@ -327,14 +348,6 @@ def main():
         log_file="training_log.tsv",
         weights_file="trained_weights.npy",
         plot_freq=cfg["plot_train_freq"],
-    )
-
-    wb = WandbLogger(
-        enabled=args.wandb,
-        project=args.wandb_project,
-        name=args.run_name,
-        config=cfg,
-        group="es_stochastic",
     )
 
     print(f"\nTraining for {cfg['n_epochs']} epochs...")

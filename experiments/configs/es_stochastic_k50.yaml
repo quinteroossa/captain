@@ -1,0 +1,44 @@
+# ES + stochastic disturbance, K=50 granularity (ablation for PPO comparison)
+# Matches PPO stochastic action granularity: cells_per_step=50, n_time_steps=340
+# Run: uv run python experiments/train_es_stochastic.py --data-dir /path/to/data --run-name es_stochastic_k50 --config experiments/configs/es_stochastic_k50.yaml
+
+# Data
+subset: false
+n_time_steps: 340
+
+# Training
+n_epochs: 500
+n_perturbations: 64
+n_parallel_workers: 8
+n_probes: 20
+calibrate_rewards: true
+seed: 42
+
+# ES hyperparameters
+initial_alpha: 0.2
+initial_sigma: 0.3
+
+# Policy
+hidden_dim: 16
+
+# Budget
+target_protected_cells: 17000
+cells_per_step: 50
+
+# Species simulation
+avg_carrying_capacity: 100
+dispersal_rate: 0.5
+dispersal_window: 3
+min_habitat_suitability: 0.05
+
+# Stochastic disturbance parameters — identical to PPO stochastic v2
+disturbance_mode: distribution
+disturbance_intensity: 0.3
+disturbance_intensity_min: 0.05
+disturbance_intensity_max: 0.5
+disturbance_coherence: 8
+disturbance_factors: [0.5, 0.5]
+disturbance_impact_factor: 0.5
+
+# Logging
+plot_train_freq: 10

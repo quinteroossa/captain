@@ -160,6 +160,17 @@ class SampledIntensityDisturbance(StochasticSpatialData):
 
     BioEnv calls reset() once per episode and update() once per timestep.
     Intensity is resampled in reset(), kept fixed within the episode in update().
+
+    Units: `data` must be a degradation-intensity layer — 0 = no disturbance,
+    1 = fully degraded — matching what `BioEnv.update_carrying_capacity()`
+    expects from `self.disturbance.data`. Baseline is 0 everywhere; cells hit
+    by a stochastic event are SET (not multiplied) to `impact_factor`. Do not
+    construct this with `data=mask` (all 1s) — that convention comes from the
+    standalone visual demo (`examples/plot_input_data.py`), which was never
+    wired into `BioEnv`. Plugged into carrying-capacity math it means
+    "undisturbed" cells are treated as maximally disturbed while "event" cells
+    end up comparatively better off — the opposite of the intended effect.
+    See DEVELOPMENT_NOTES.md, "Disturbance units inverted" (2026-07-23).
     """
 
     def __init__(
@@ -205,6 +216,9 @@ class SampledIntensityDisturbance(StochasticSpatialData):
 
         Fix: use torch.quantile so that `intensity` directly controls the fraction
         of zero-risk cells disturbed per step, independent of the noise distribution.
+
+        Cells hit by an event are SET to `impact_factor` (a degradation-intensity
+        value, 0-1), not multiplied by it — baseline (unhit) cells stay at 0.
         """
         noise_2d = self.noise_generator()[
             :, : self.binary_mask_2d.shape[0], : self.binary_mask_2d.shape[1]
@@ -214,7 +228,7 @@ class SampledIntensityDisturbance(StochasticSpatialData):
         event_mask_2d = noise_2d < q_threshold * (1.0 - self.risk_map)
 
         flat_event_mask = event_mask_2d[self.binary_mask_2d]
-        self._data[:, flat_event_mask] *= impact_factor
+        self._data[:, flat_event_mask] = impact_factor
 
     @property
     def current_intensity(self) -> float:
